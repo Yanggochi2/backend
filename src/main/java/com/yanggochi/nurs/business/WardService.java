@@ -57,7 +57,8 @@ public class WardService {
     public record WardView(long id, String name, String hospital, String code, Rules rules) {
     }
 
-    public record JoinRequestView(long id, long userId, String name, String email, Instant createdAt) {
+    /** candidates: 이름이 같고 계정이 없는 기존 간호사. 승인 시 nurseId로 지정하면 그 행에 계정을 연결한다 */
+    public record JoinRequestView(long id, long userId, String name, String email, Instant createdAt, List<Long> candidates) {
     }
 
     public enum TransferMode { GRANT, TRANSFER }
@@ -116,31 +117,46 @@ public class WardService {
 
     public List<JoinRequestView> pendingJoins(long userId) {
         Member m = members.requireHead(userId);
+        List<Nurse> unlinked = nurses.findByWardId(m.wardId()).stream()
+                .filter(n -> n.userId == null && n.status != NurseStatus.RETIRED).toList();
         return joins.findByWardIdAndStatus(m.wardId(), RequestStatus.PENDING).stream()
                 .map(j -> {
                     User u = users.findById(j.userId).orElseThrow();
-                    return new JoinRequestView(j.id, u.id, u.name, u.email, j.createdAt);
+                    List<Long> candidates = unlinked.stream().filter(n -> n.name.equals(u.name)).map(n -> n.id).toList();
+                    return new JoinRequestView(j.id, u.id, u.name, u.email, j.createdAt, candidates);
                 }).toList();
     }
 
-    /** AUTH-06. 승인으로 부여되는 역할은 NURSE 고정 */
+    /**
+     * AUTH-06. 승인으로 부여되는 역할은 NURSE 고정.
+     * linkNurseId가 있으면 수간호사가 미리 등록한 (계정 없는) 간호사 행에 계정을 연결한다. 같은 사람이 두 행이 되지 않게
+     */
     @Transactional
-    public void decideJoin(long userId, long joinId, boolean approve) {
+    public void decideJoin(long userId, long joinId, boolean approve, Long linkNurseId) {
         Member m = members.requireHead(userId);
         JoinRequest j = joins.findByIdAndWardId(joinId, m.wardId()).orElseThrow(ApiException::notFound);
         if (j.status != RequestStatus.PENDING) throw ApiException.conflict("이미 처리된 신청입니다");
         if (approve) {
             if (members.membership(j.userId).isPresent()) throw ApiException.conflict("이미 다른 병동에 소속된 사용자입니다");
-            Nurse n = new Nurse();
-            n.wardId = m.wardId();
-            n.userId = j.userId;
-            n.name = users.findById(j.userId).orElseThrow().name;
-            n.joinedAt = LocalDate.now();
-            n.affiliationStart = LocalDate.now();
-            nurses.save(n);
+            if (linkNurseId != null) {
+                Nurse n = nurses.findByIdAndWardId(linkNurseId, m.wardId()).orElseThrow(ApiException::notFound);
+                if (n.userId != null || n.status == NurseStatus.RETIRED)
+                    throw ApiException.conflict("계정이 없는 재직 간호사에게만 연결할 수 있습니다");
+                n.userId = j.userId;
+                n.role = Role.NURSE;
+            } else {
+                Nurse n = new Nurse();
+                n.wardId = m.wardId();
+                n.userId = j.userId;
+                n.name = users.findById(j.userId).orElseThrow().name;
+                n.joinedAt = LocalDate.now();
+                n.affiliationStart = LocalDate.now();
+                nurses.save(n);
+            }
         }
         j.status = approve ? RequestStatus.APPROVED : RequestStatus.REJECTED;
-        audit.log(m.wardId(), userId, approve ? "JOIN_APPROVED" : "JOIN_REJECTED", "user:" + j.userId, null, null);
+        audit.log(m.wardId(), userId, approve ? "JOIN_APPROVED" : "JOIN_REJECTED", "user:" + j.userId, null,
+                linkNurseId == null ? null : "linked nurse:" + linkNurseId);
         if (approve) notifications.notifyUser(j.userId, com.yanggochi.nurs.domain.NotificationType.JOIN_APPROVED, "병동 가입이 승인되었습니다");
     }
 

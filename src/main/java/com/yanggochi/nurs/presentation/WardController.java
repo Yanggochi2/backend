@@ -35,6 +35,10 @@ public class WardController {
     public record PresetBody(@NotNull Rules.Preset preset) {
     }
 
+    /** nurseId: 계정을 연결할 기존 간호사 (선택) */
+    public record ApproveBody(Long nurseId) {
+    }
+
     @PostMapping("/wards")
     @ResponseStatus(HttpStatus.CREATED)
     public WardService.WardView create(@SessionAttribute(USER_ID) Long userId, @Valid @RequestBody WardService.CreateWard body) {
@@ -63,13 +67,14 @@ public class WardController {
     }
 
     @PostMapping("/ward/join-requests/{id}/approve")
-    public void approveJoin(@SessionAttribute(USER_ID) Long userId, @PathVariable long id) {
-        wards.decideJoin(userId, id, true);
+    public void approveJoin(@SessionAttribute(USER_ID) Long userId, @PathVariable long id,
+                            @RequestBody(required = false) ApproveBody body) {
+        wards.decideJoin(userId, id, true, body == null ? null : body.nurseId());
     }
 
     @PostMapping("/ward/join-requests/{id}/reject")
     public void rejectJoin(@SessionAttribute(USER_ID) Long userId, @PathVariable long id) {
-        wards.decideJoin(userId, id, false);
+        wards.decideJoin(userId, id, false, null);
     }
 
     @PostMapping("/ward/head-transfer")
