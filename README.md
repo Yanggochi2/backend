@@ -10,6 +10,13 @@ docker compose up -d                                   # PostgreSQL (nurs/nurs)
 ./gradlew test
 ```
 
+### API E2E 점검 (QA)
+빈 DB로 띄운 서버를 상대로 전체 시나리오(99개 항목)를 확인한다. 실패가 있으면 종료 코드 1.
+```bash
+java -jar build/libs/backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=local --server.port=18080 "--reminder.cron=*/10 * * * * *" &
+scripts/e2e.sh 18080
+```
+
 ## 구조 (3-Layered, CLAUDE.md)
 - `presentation` 컨트롤러·세션 인터셉터·에러 변환
 - `business` 서비스 (권한·병동 범위 검증, 감사 로그)
