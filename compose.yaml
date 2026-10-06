@@ -1,0 +1,9 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: nurs
+      POSTGRES_USER: nurs
+      POSTGRES_PASSWORD: nurs
+    ports:
+      - "5432:5432"
