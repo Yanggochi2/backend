@@ -6,25 +6,28 @@
 #        "--reminder.cron=*/10 * * * * *" &
 #   scripts/e2e.sh 18080
 #
-# 필요: curl, python3. 날짜는 실행일 기준으로 계산한다 (리마인드 확인용으로 '내일'이 속한 달의 근무표를 쓴다).
+# 필요: curl, python3. 날짜는 실행일 기준으로 계산한다. [리뷰#N] 항목은 PR #14 리뷰 지적의 회귀 검사.
 FIXTURE="$(cd "$(dirname "$0")" && pwd)/fixtures/roster.xlsx"
 cd "$(mktemp -d)"
 U=localhost:${1:-18080}/api
 DATES=$(mktemp)
 cat > "$DATES" <<'EOF'
-from datetime import date, datetime, timedelta, timezone
-t = datetime.now(timezone(timedelta(hours=9))).date() + timedelta(days=1)
-ym = t.strftime("%Y-%m")
-block = range(20, 26) if t.day <= 15 else range(3, 9)   # 신청 날짜: '내일' 근처를 피한다
-print(f"YM={ym}; D_T={t}")
-for i, d in enumerate(block): print(f"D_L{i}={ym}-{d:02d}")
-fix = [(t - timedelta(days=1), "O"), (t, "D"), (t + timedelta(days=1), "O")]
-fix = [(d, x) for d, x in fix if d.strftime("%Y-%m") == ym]
+from datetime import datetime, timedelta, timezone
 import json
-cells = json.dumps([{"nurseId": "NID", "date": str(d), "duty": x} for d, x in fix])[1:-1]
-refs = json.dumps([{"nurseId": "NID", "date": str(d)} for d, x in fix])[1:-1]
-print("FIXCELLS='" + cells.replace('"NID"', "NID") + "'")
-print("FIXREFS='" + refs.replace('"NID"', "NID") + "'")
+today = datetime.now(timezone(timedelta(hours=9))).date()
+t = today + timedelta(days=1)
+nxt = (today.replace(day=1) + timedelta(days=32)).replace(day=1)
+ym, tm = nxt.strftime("%Y-%m"), t.strftime("%Y-%m")   # 주 시나리오는 다음 달(모두 미래 날짜), 리마인드는 '내일'의 달
+print(f"YM={ym}; TM={tm}; D_T={t}")
+for i, d in enumerate(range(20, 26)): print(f"D_L{i}={ym}-{d:02d}")
+def js(cells, duty):
+    out = [dict(nurseId="NID", date=str(d), **({"duty": x} if duty else {})) for d, x in cells]
+    return json.dumps(out)[1:-1].replace('"NID"', "NID")
+main = [(nxt.replace(day=9), "O"), (nxt.replace(day=10), "D"), (nxt.replace(day=11), "O")]
+rem = [(d, x) for d, x in [(t - timedelta(days=1), "O"), (t, "D"), (t + timedelta(days=1), "O")] if d.strftime("%Y-%m") == tm]
+if tm == ym: main += rem   # 오늘이 말일이면 같은 근무표에서 함께 고정
+print(f"FIXCELLS='{js(main, True)}'"); print(f"FIXREFS='{js(main, False)}'")
+print(f"TFIXCELLS='{js(rem, True)}'"); print(f"TFIXREFS='{js(rem, False)}'")
 EOF
 eval "$(python3 "$DATES")"
 PASS=0; FAIL=0
@@ -80,7 +83,7 @@ req n.jar GET /me; ok 200 "승인 후 NURSE로 소속" 'd["role"]=="NURSE"'; NID
 req h.jar GET /me; HID=$(val 'd["nurseId"]')
 req h.jar PUT /nurses/$NID '{"name":"이간호","dutyRole":"GENERAL","status":"ACTIVE","joinedAt":"2025-01-01","careerMonths":24,"skillLevel":3,"affiliationStart":"2025-01-01"}'
 ok 200 "간호사 정보 수정 (+위반 목록 응답)" 'd["nurse"]["affiliationStart"]=="2025-01-01" and d["violations"]==[]'
-FIXCELLS=${FIXCELLS//NID/$NID}; FIXREFS=${FIXREFS//NID/$NID}
+FIXCELLS=${FIXCELLS//NID/$NID}; FIXREFS=${FIXREFS//NID/$NID}; TFIXCELLS=${TFIXCELLS//NID/$NID}; TFIXREFS=${TFIXREFS//NID/$NID}
 req n.jar GET /ward; ok 200 "일반 간호사에게 병동 코드 숨김" 'd["code"] is None'
 req n.jar POST /ward/code; ok 403 "일반 간호사 코드 재발급 불가"
 for i in 1 2 3 4 5; do req o.jar POST /auth/signup "{\"name\":\"r$i\",\"email\":\"r$i@x.com\",\"password\":\"pass1234\",\"agreeTerms\":true}" >/dev/null; done
@@ -124,6 +127,12 @@ req h.jar POST /requests/$WO/approve; ok 200 "희망 오프 승인"
 req h.jar POST /requests/$WD/reject '{"reason":"인원 부족"}'; ok 200 "희망 근무 반려" 'd["rejectReason"]=="인원 부족"'
 req h.jar POST /requests/$LV/approve; ok 409 "이미 처리된 신청 재처리 불가"
 req n.jar GET "/requests/me?yearMonth=$YM"; ok 200 "본인 신청 목록" 'd["total"]==3'
+req n.jar POST /requests '{"type":"ANNUAL_LEAVE","date":"'"$D_L0"'"}'; ok 409 "[리뷰#4] 같은 날짜 중복 신청 409"
+req n.jar POST /requests '{"type":"ANNUAL_LEAVE","date":"2020-01-01"}'; ok 400 "[리뷰#4] 지난 날짜 신청 400"
+req n.jar POST /requests '{"type":"ANNUAL_LEAVE","date":"'"$YM-26"'","reasonCode":"아무거나"}'; ok 400 "[리뷰#3] 연차도 사유는 코드값만"
+req n.jar GET "/requests/me?yearMonth=abc"; ok 400 "[리뷰#7] 잘못된 연월 → 400 (500 아님)"
+req n.jar GET "/nurses?role=KING"; ok 400 "[리뷰#7] 잘못된 enum 파라미터 → 400"
+req n.jar POST /requests '{bad json'; ok 400 "[리뷰#7] 깨진 JSON → 400"
 
 echo "■ 근무표 (SCH)"
 req h.jar POST /schedules/$YM; ok 201 "빈 근무표 생성 + 연차 AL 선반영" "[r for r in d['rows'] if r['nurseId']==$NID][0]['cells'].get('$D_L0')=='AL'"
@@ -152,14 +161,14 @@ req n.jar PATCH /schedules/$YM/cells "[$FIXCELLS]"
 req n.jar POST /schedules/$YM/generate "{\"fixed\":[$FIXREFS]}"
 ok 200 "자동 생성: 하드 위반 0 + 희망 오프 반영" 'd["solved"]==True and d["wishOffRate"]==1.0'
 req n.jar GET /schedules/$YM
-ok 200 "고정 셀·연차 유지" "(lambda c: c['$D_T']=='D' and c['$D_L0']=='AL')([r for r in d['rows'] if r['nurseId']==$NID][0]['cells'])"
+ok 200 "고정 셀·연차 유지" "(lambda c: c['$YM-10']=='D' and c['$D_L0']=='AL')([r for r in d['rows'] if r['nurseId']==$NID][0]['cells'])"
 ok 200 "커버리지·통계·잠금 표시" "d['coverage']['$YM-15']['D']>=2 and len(d['stats'])==14 and d['lock']['name']=='이간호'"
 
 echo "■ 엑셀 (SCH-09·11, 명단)"
 CODE=$(curl -s -b n.jar -o s.xlsx -w '%{http_code}' $U/schedules/$YM/export); echo '{}' > out.json; ok 200 "근무표 엑셀 내보내기"
 CODE=$(curl -s -b n.jar -F file=@s.xlsx -o out.json -w '%{http_code}' $U/schedules/$YM/import/preview)
 ok 200 "내보낸 파일 가져오기 미리보기" 'len(d["cells"])>=13*25 and d["codes"].get("D")=="D"'
-req n.jar POST /schedules/$YM/import/apply "[{\"nurseId\":$NID,\"date\":\"$D_T\",\"duty\":\"D\"}]"; ok 200 "가져오기 반영"
+req n.jar POST /schedules/$YM/import/apply "[{\"nurseId\":$NID,\"date\":\"$YM-10\",\"duty\":\"D\"}]"; ok 200 "가져오기 반영"
 echo hi > bad.xlsx; CODE=$(curl -s -b n.jar -F file=@bad.xlsx -o out.json -w '%{http_code}' $U/schedules/$YM/import/preview); ok 400 "깨진 파일 거부"
 CODE=$(curl -s -b h.jar -o nurses.xlsx -w '%{http_code}' $U/nurses/export); echo '{}' > out.json; ok 200 "명단 내보내기"
 CODE=$(curl -s -b h.jar -F file=@nurses.xlsx -o out.json -w '%{http_code}' $U/nurses/import/preview)
@@ -170,6 +179,9 @@ ok 200 "새 명단 미리보기 (오류 행 표시)" 'sum(1 for r in d if r["err
 req h.jar POST /nurses/import/apply "$(cat ok.json)"; ok 201 "명단 일괄 등록" 'len(d)==4'
 
 echo "■ 확정·알림 (SCH-12·REQ-06)"
+req n.jar POST /requests '{"type":"WISH_OFF","date":"'"$YM-27"'","reasonCode":"ETC"}'; PEND=$(val 'd["id"]')
+req n.jar POST /schedules/$YM/confirm; ok 409 "[리뷰#2] 대기 중인 신청이 있으면 확정 차단" "d['detail']==[$PEND]"
+req n.jar POST /requests/$PEND/reject '{"reason":"확정 예정"}'
 req n.jar POST /schedules/$YM/confirm; ok 200 "확정"
 req n.jar POST /requests '{"type":"WISH_OFF","date":"'"$D_L5"'","reasonCode":"ETC"}'; ok 409 "확정된 월에는 신청 불가"
 req h.jar POST /nurses/$HID/retire '{"affiliationEnd":"2099-12-31"}'; ok 200 "수간호사 2명이면 퇴사 가능" 'type(d["violations"])==list'
@@ -184,6 +196,12 @@ req n.jar GET /notifications/me; ok 200 "꺼둔 종류는 알림 안 옴" '"SCHE
 req n.jar POST /schedules/$YM/confirm; ok 200 "재확정"
 
 echo "■ 근무 전날 리마인드 (10초마다 실행 설정)"
+if [ "$TM" != "$YM" ]; then
+  req n.jar POST /schedules/$TM; ok 201 "'내일'이 속한 달($TM) 근무표 생성"
+  req n.jar PATCH /schedules/$TM/cells "[$TFIXCELLS]"
+  req n.jar POST /schedules/$TM/generate "{\"fixed\":[$TFIXREFS]}"; ok 200 "자동 생성 (하드 위반 0)" 'd["solved"]==True'
+  req n.jar POST /schedules/$TM/confirm; ok 200 "확정"
+fi
 sleep 12
 req n.jar GET /notifications/me; ok 200 "내일($D_T) D 근무 리마인드 수신" "any(x['type']=='DUTY_REMINDER' and '$D_T' in x['message'] for x in d['page']['content'])"
 
@@ -199,6 +217,19 @@ req o.jar GET "/audit-logs?size=100"; ok 200 "타 병동 감사 로그 안 보�
 req n.jar GET "/audit-logs?size=200"
 ok 200 "감사 로그 기록 대상" '{"LOGIN","WARD_CREATED","CODE_REISSUED","JOIN_REQUESTED","JOIN_APPROVED","HEAD_GRANT","NURSE_REGISTERED","NURSE_RETIRED","RULES_CHANGED","SCHEDULE_CREATED","SCHEDULE_GENERATED","SCHEDULE_CONFIRMED","SCHEDULE_UNCONFIRMED","EXCEL_EXPORTED","EXCEL_IMPORTED","NURSE_EXPORTED","NURSE_IMPORTED","REQUEST_APPROVED","REQUEST_REJECTED","LOCK_FORCED"} <= {x["action"] for x in d["content"]}'
 req n.jar GET "/audit-logs?action=LOCK_FORCED"; ok 200 "감사 로그 필터" 'd["total"]==1'
+req n.jar POST /nurses "$(printf "$NURSE" 박연결 GENERAL ACTIVE 30)"; LINK=$(val 'd["nurse"]["id"]')
+rm -f l.jar; req l.jar POST /auth/signup '{"name":"박연결","email":"link@x.com","password":"pass1234","agreeTerms":true}'
+req l.jar POST /ward/join "{\"code\":\"$CODE2\"}"
+req n.jar GET /ward/join-requests; ok 200 "[리뷰#5] 가입 대기에 같은 이름의 미연결 간호사 후보 표시" "[j for j in d if j['name']=='박연결'][0]['candidates']==[$LINK]"
+JID2=$(val "[j for j in d if j['name']=='박연결'][0]['id']")
+req n.jar POST /ward/join-requests/$JID2/approve "{\"nurseId\":$LINK}"; ok 200 "[리뷰#5] 기존 간호사 행에 계정 연결"
+req l.jar GET /me; ok 200 "[리뷰#5] 새 행 없이 기존 간호사로 소속" "d['nurseId']==$LINK"
+req n.jar POST /nurses "$(printf "$NURSE" 동명 GENERAL ACTIVE 10)"; req n.jar POST /nurses "$(printf "$NURSE" 동명 GENERAL ACTIVE 20)"
+curl -s -b n.jar -o s2.xlsx $U/schedules/$YM/export
+CODE=$(curl -s -b n.jar -F file=@s2.xlsx -o out.json -w '%{http_code}' $U/schedules/$YM/import/preview)
+ok 200 "[리뷰#6] 동명이인은 자동 매칭하지 않고 후보 제시" '[(r["nurseId"], len(r["candidates"])) for r in d["rows"] if r["name"]=="동명"]==[(None,2),(None,2)]'
+for i in 1 2 3 4 5; do req o.jar POST /auth/login '{"email":"link@x.com","password":"wrong1234"}'; done
+req o.jar POST /auth/login '{"email":"link@x.com","password":"pass1234"}'; ok 429 "[리뷰#8] 로그인 5회 실패 후 차단 (맞는 비밀번호도)"
 req n.jar POST /auth/logout; ok 204 "로그아웃"
 req n.jar GET /me; ok 401 "로그아웃 후 401"
 

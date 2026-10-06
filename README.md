@@ -11,7 +11,7 @@ docker compose up -d                                   # PostgreSQL (nurs/nurs)
 ```
 
 ### API E2E 점검 (QA)
-빈 DB로 띄운 서버를 상대로 전체 시나리오(99개 항목)를 확인한다. 실패가 있으면 종료 코드 1.
+빈 DB로 띄운 서버를 상대로 전체 시나리오(114개 항목, PR #14 리뷰 회귀 검사 포함)를 확인한다. 실패가 있으면 종료 코드 1.
 ```bash
 java -jar build/libs/backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=local --server.port=18080 "--reminder.cron=*/10 * * * * *" &
 scripts/e2e.sh 18080
@@ -22,6 +22,9 @@ scripts/e2e.sh 18080
 - `business` 서비스 (권한·병동 범위 검증, 감사 로그)
 - `persistence` JPA 엔티티·리포지토리
 - `domain` 순수 규칙: `ScheduleValidator`(SCH-06), `ScheduleGenerator`(GEN-01)
+
+## 오류 응답
+모든 오류는 `{message, detail?}` 형식이다. 400 입력 오류(필드별 메시지는 `detail`) · 401 미로그인 · 403 권한 없음 · 404 없음/타 병동 · 409 상태 충돌·중복·동시 수정 · 413 파일 크기 초과 · 429 시도 횟수 초과(가입 코드 10회/시간, 로그인 실패 5회/15분)
 
 ## 보안 원칙 (SEC-03)
 - 인증은 세션 쿠키(HttpOnly, Secure, SameSite=Strict, 30분). 토큰을 body/쿼리로 주고받지 않음
@@ -38,7 +41,7 @@ scripts/e2e.sh 18080
 | POST | /ward/join `{code}` | 가입 신청 (AUTH-03, 시간당 10회) | 소속 없음 |
 | POST | /ward/code | 코드 재발급 (AUTH-04) | 수간호사 |
 | GET | /ward/join-requests | 가입 대기 목록 | 수간호사 |
-| POST | /ward/join-requests/{id}/approve·reject | AUTH-06 | 수간호사 |
+| POST | /ward/join-requests/{id}/approve `{nurseId?}`·reject | AUTH-06. 목록의 `candidates`(같은 이름·계정 없는 간호사) 중 하나를 `nurseId`로 주면 그 행에 계정 연결 | 수간호사 |
 | POST | /ward/head-transfer `{nurseId, mode: GRANT/TRANSFER}` | AUTH-07 | 수간호사 |
 | GET/PUT | /rules, POST /rules/preset | RULE-01·02·05 | 조회 소속 / 수정 수간호사 |
 | GET/POST/DELETE | /holidays | RULE-03 | 조회 소속 / 수정 수간호사 |
@@ -56,7 +59,7 @@ scripts/e2e.sh 18080
 | PUT | /schedules/{ym}/off-target `{offTarget}` | RULE-04 수동 조정 (null=자동) | 수간호사 |
 | POST/DELETE | /schedules/{ym}/lock `?force=true` | SCH-13 편집 잠금 (30분 무활동 해제, 편집·생성 시 자동 획득) | 수간호사 |
 | GET | /schedules/{ym}/export | SCH-09 .xlsx (감사 로그 기록) | 수간호사 |
-| POST | /schedules/{ym}/import/preview (multipart `file`) | SCH-11 1단계: 이름 매칭·코드 제안, 저장 안 함 | 수간호사 |
+| POST | /schedules/{ym}/import/preview (multipart `file`) | SCH-11 1단계: 이름 매칭·코드 제안, 저장 안 함. 동명이인 행은 `nurseId=null` + `candidates` | 수간호사 |
 | POST | /schedules/{ym}/import/apply `[{nurseId,date,duty}]` | SCH-11 2단계: 반영 + 위반 목록 | 수간호사 |
 | GET | /notifications/me, POST /notifications/me/{id}/read | REQ-06 알림함 | 로그인 |
 | GET/PUT | /notifications/me/settings `{muted:[...]}` | 종류별 off | 로그인 |
