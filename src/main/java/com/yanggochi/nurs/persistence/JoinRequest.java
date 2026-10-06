@@ -15,4 +15,7 @@ public class JoinRequest {
     @Enumerated(EnumType.STRING)
     public RequestStatus status = RequestStatus.PENDING;
     public Instant createdAt = Instant.now();
+    public Instant decidedAt;
+    public Long decidedBy;
+    public String rejectReason;
 }

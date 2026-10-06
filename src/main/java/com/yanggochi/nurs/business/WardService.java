@@ -55,6 +55,11 @@ public class WardService {
     public record JoinRequestView(long id, long userId, String name, String email, Instant createdAt, List<Long> candidates) {
     }
 
+    /** 신청자 본인이 보는 가입 신청 상태 (승인 대기 화면용) */
+    public record MyJoinView(long id, RequestStatus status, String wardName, String hospital, Instant createdAt,
+                             Instant decidedAt, String rejectReason) {
+    }
+
     public enum TransferMode { GRANT, TRANSFER }
 
     public WardView get(long userId) {
@@ -65,6 +70,9 @@ public class WardService {
     @Transactional
     public WardView create(long userId, CreateWard req) {
         if (members.membership(userId).isPresent()) throw ApiException.conflict("이미 소속된 병동이 있습니다");
+        // 대기 중인 신청이 나중에 승인되면 두 병동에 소속되므로 먼저 취소하게 한다
+        if (joins.existsByUserIdAndStatus(userId, RequestStatus.PENDING))
+            throw ApiException.conflict("승인 대기 중인 가입 신청을 먼저 취소하세요");
         User u = users.findById(userId).orElseThrow(ApiException::notFound);
         Ward w = new Ward();
         w.name = req.name();
@@ -86,19 +94,41 @@ public class WardService {
         return view(w, true);
     }
 
+    /** AUTH-03. 신청 결과로 어느 병동에 신청됐는지 돌려준다 (승인 대기 화면에 표시) */
     @Transactional
-    public void join(long userId, String code) {
+    public MyJoinView join(long userId, String code) {
         joinAttempts.check(userId);
         joinAttempts.record(userId);
         if (members.membership(userId).isPresent()) throw ApiException.conflict("이미 소속된 병동이 있습니다");
         if (joins.existsByUserIdAndStatus(userId, RequestStatus.PENDING)) throw ApiException.conflict("승인 대기 중인 신청이 있습니다");
-        Ward w = wards.findByCode(code == null ? "" : code.trim().toUpperCase())
-                .orElseThrow(() -> ApiException.badRequest("유효하지 않은 병동 코드입니다"));
+        String c = code == null ? "" : code.trim().toUpperCase();
+        if (!c.matches("[A-Z0-9]{6,8}")) throw ApiException.badRequest("병동 코드는 영문·숫자 6~8자입니다");
+        Ward w = wards.findByCode(c).orElseThrow(() -> ApiException.badRequest("유효하지 않은 병동 코드입니다"));
         JoinRequest j = new JoinRequest();
         j.wardId = w.id;
         j.userId = userId;
         joins.save(j);
         audit.log(w.id, userId, "JOIN_REQUESTED", "user:" + userId, null, null);
+        return myView(j, w);
+    }
+
+    /** 가장 최근 가입 신청 (대기·승인·반려·취소) */
+    public MyJoinView myJoin(long userId) {
+        JoinRequest j = joins.findFirstByUserIdOrderByIdDesc(userId).orElseThrow(ApiException::notFound);
+        return myView(j, wards.findById(j.wardId).orElseThrow(ApiException::notFound));
+    }
+
+    /** 승인 대기 중인 신청을 본인이 취소한다 (코드를 잘못 입력한 경우 등) */
+    @Transactional
+    public void cancelJoin(long userId) {
+        JoinRequest j = joins.findFirstByUserIdAndStatus(userId, RequestStatus.PENDING).orElseThrow(ApiException::notFound);
+        j.status = RequestStatus.CANCELED;
+        j.decidedAt = Instant.now();
+        audit.log(j.wardId, userId, "JOIN_CANCELED", "user:" + userId, null, null);
+    }
+
+    private static MyJoinView myView(JoinRequest j, Ward w) {
+        return new MyJoinView(j.id, j.status, w.name, w.hospital, j.createdAt, j.decidedAt, j.rejectReason);
     }
 
     @Transactional
@@ -127,7 +157,7 @@ public class WardService {
      * linkNurseId가 있으면 수간호사가 미리 등록한 (계정 없는) 간호사 행에 계정을 연결한다. 같은 사람이 두 행이 되지 않게
      */
     @Transactional
-    public void decideJoin(long userId, long joinId, boolean approve, Long linkNurseId) {
+    public void decideJoin(long userId, long joinId, boolean approve, Long linkNurseId, String rejectReason) {
         Member m = members.requireHead(userId);
         JoinRequest j = joins.findByIdAndWardId(joinId, m.wardId()).orElseThrow(ApiException::notFound);
         if (j.status != RequestStatus.PENDING) throw ApiException.conflict("이미 처리된 신청입니다");
@@ -150,9 +180,17 @@ public class WardService {
             }
         }
         j.status = approve ? RequestStatus.APPROVED : RequestStatus.REJECTED;
+        j.decidedAt = Instant.now();
+        j.decidedBy = userId;
+        j.rejectReason = approve ? null : rejectReason;
         audit.log(m.wardId(), userId, approve ? "JOIN_APPROVED" : "JOIN_REJECTED", "user:" + j.userId, null,
                 linkNurseId == null ? null : "linked nurse:" + linkNurseId);
-        if (approve) notifications.notifyUser(j.userId, com.yanggochi.nurs.domain.NotificationType.JOIN_APPROVED, "병동 가입이 승인되었습니다");
+        Ward w = wards.findById(m.wardId()).orElseThrow();
+        if (approve)
+            notifications.notifyUser(j.userId, com.yanggochi.nurs.domain.NotificationType.JOIN_APPROVED, w.name + " 가입이 승인되었습니다");
+        else
+            notifications.notifyUser(j.userId, com.yanggochi.nurs.domain.NotificationType.JOIN_REJECTED,
+                    w.name + " 가입이 반려되었습니다" + (rejectReason == null || rejectReason.isBlank() ? "" : ". 사유: " + rejectReason));
     }
 
     /** AUTH-07 */

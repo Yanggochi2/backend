@@ -39,6 +39,9 @@ public class WardController {
     public record ApproveBody(Long nurseId) {
     }
 
+    public record RejectBody(String reason) {
+    }
+
     @PostMapping("/wards")
     @ResponseStatus(HttpStatus.CREATED)
     public WardService.WardView create(@SessionAttribute(USER_ID) Long userId, @Valid @RequestBody WardService.CreateWard body) {
@@ -52,8 +55,20 @@ public class WardController {
 
     @PostMapping("/ward/join")
     @ResponseStatus(HttpStatus.ACCEPTED)
-    public void join(@SessionAttribute(USER_ID) Long userId, @Valid @RequestBody JoinBody body) {
-        wards.join(userId, body.code());
+    public WardService.MyJoinView join(@SessionAttribute(USER_ID) Long userId, @Valid @RequestBody JoinBody body) {
+        return wards.join(userId, body.code());
+    }
+
+    /** 승인 대기 화면: 내 최근 가입 신청 상태 */
+    @GetMapping("/ward/join")
+    public WardService.MyJoinView myJoin(@SessionAttribute(USER_ID) Long userId) {
+        return wards.myJoin(userId);
+    }
+
+    @DeleteMapping("/ward/join")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void cancelJoin(@SessionAttribute(USER_ID) Long userId) {
+        wards.cancelJoin(userId);
     }
 
     @PostMapping("/ward/code")
@@ -69,12 +84,13 @@ public class WardController {
     @PostMapping("/ward/join-requests/{id}/approve")
     public void approveJoin(@SessionAttribute(USER_ID) Long userId, @PathVariable long id,
                             @RequestBody(required = false) ApproveBody body) {
-        wards.decideJoin(userId, id, true, body == null ? null : body.nurseId());
+        wards.decideJoin(userId, id, true, body == null ? null : body.nurseId(), null);
     }
 
     @PostMapping("/ward/join-requests/{id}/reject")
-    public void rejectJoin(@SessionAttribute(USER_ID) Long userId, @PathVariable long id) {
-        wards.decideJoin(userId, id, false, null);
+    public void rejectJoin(@SessionAttribute(USER_ID) Long userId, @PathVariable long id,
+                           @RequestBody(required = false) RejectBody body) {
+        wards.decideJoin(userId, id, false, null, body == null ? null : body.reason());
     }
 
     @PostMapping("/ward/head-transfer")
