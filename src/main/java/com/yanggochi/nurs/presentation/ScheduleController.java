@@ -97,8 +97,9 @@ public class ScheduleController {
     }
 
     @PostMapping("/confirm")
-    public List<Violation> confirm(@SessionAttribute(USER_ID) Long userId, @PathVariable String ym) {
-        return schedules.confirm(userId, ym);
+    public List<Violation> confirm(@SessionAttribute(USER_ID) Long userId, @PathVariable String ym,
+                                   @RequestBody(required = false) ScheduleService.Confirm body) {
+        return schedules.confirm(userId, ym, body != null && body.acknowledgeSoft());
     }
 
     @PostMapping("/unconfirm")

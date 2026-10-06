@@ -73,12 +73,26 @@ req h.jar POST /wards '{"name":"x","hospital":"x","requiredD":1,"requiredE":1,"r
 req h.jar POST /ward/code; ok 200 "코드 재발급"; CODE2=$(val 'd["code"]')
 req n.jar POST /auth/signup '{"name":"이간호","email":"nurse@x.com","password":"pass1234","agreeTerms":true}'
 req n.jar POST /ward/join "{\"code\":\"$CODE1\"}"; ok 400 "폐기된 옛 코드로 가입 불가"
-req n.jar POST /ward/join "{\"code\":\"$(echo $CODE2 | tr A-Z a-z)\"}"; ok 202 "새 코드로 가입 신청 (소문자 입력 허용)"
+req n.jar POST /ward/join "{\"code\":\"$(echo $CODE2 | tr A-Z a-z)\"}"; ok 202 "새 코드로 가입 신청 (소문자 입력 허용) + 신청 병동 표시" 'd["wardName"]=="7병동" and d["status"]=="PENDING"'
 req n.jar POST /ward/join "{\"code\":\"$CODE2\"}"; ok 409 "중복 신청 거부"
+req n.jar GET /ward/join; ok 200 "내 가입 신청 상태 조회" 'd["status"]=="PENDING" and d["hospital"]=="한빛"'
+req n.jar POST /wards '{"name":"x","hospital":"x","requiredD":1,"requiredE":1,"requiredN":1,"preset":"MINIMAL"}'; ok 409 "승인 대기 중에는 병동 개설 불가"
+req n.jar DELETE /ward/join; ok 204 "대기 중인 신청 본인 취소"
+req n.jar GET /ward/join; ok 200 "취소 상태 표시" 'd["status"]=="CANCELED"'
+req n.jar DELETE /ward/join; ok 404 "취소할 대기 신청 없음 → 404"
+req n.jar POST /ward/join '{"code":"AB"}'; ok 400 "코드 형식(영문·숫자 6~8자) 검사"
+req n.jar POST /ward/join "{\"code\":\"$CODE2\"}"; ok 202 "취소 후 다시 신청"
 req n.jar GET /nurses; ok 403 "승인 전에는 병동 기능 사용 불가"
 req n.jar GET /me; ok 200 "승인 대기 표시" 'd["joinPending"]==True'
 req h.jar GET /ward/join-requests; ok 200 "대기 목록" 'len(d)==1'; JID=$(val 'd[0]["id"]')
 req h.jar POST /ward/join-requests/$JID/approve; ok 200 "가입 승인"
+req n.jar GET /ward/join; ok 200 "승인 상태 표시" 'd["status"]=="APPROVED" and d["decidedAt"]'
+rm -f r.jar; req r.jar POST /auth/signup '{"name":"반려됨","email":"rej@x.com","password":"pass1234","agreeTerms":true}'
+req r.jar POST /ward/join "{\"code\":\"$CODE2\"}"
+req h.jar GET /ward/join-requests; RJID=$(val "[j for j in d if j['name']=='반려됨'][0]['id']")
+req h.jar POST /ward/join-requests/$RJID/reject '{"reason":"소속 확인 불가"}'; ok 200 "가입 반려 (사유 포함)"
+req r.jar GET /ward/join; ok 200 "신청자에게 반려 사유 표시" 'd["status"]=="REJECTED" and d["rejectReason"]=="소속 확인 불가"'
+req r.jar GET /notifications/me; ok 200 "반려 알림" 'any(x["type"]=="JOIN_REJECTED" and "소속 확인 불가" in x["message"] for x in d["page"]["content"])'
 req n.jar GET /me; ok 200 "승인 후 NURSE로 소속" 'd["role"]=="NURSE"'; NID=$(val 'd["nurseId"]')
 req h.jar GET /me; HID=$(val 'd["nurseId"]')
 req h.jar PUT /nurses/$NID '{"name":"이간호","dutyRole":"GENERAL","status":"ACTIVE","joinedAt":"2025-01-01","careerMonths":24,"skillLevel":3,"affiliationStart":"2025-01-01"}'
@@ -182,7 +196,10 @@ echo "■ 확정·알림 (SCH-12·REQ-06)"
 req n.jar POST /requests '{"type":"WISH_OFF","date":"'"$YM-27"'","reasonCode":"ETC"}'; PEND=$(val 'd["id"]')
 req n.jar POST /schedules/$YM/confirm; ok 409 "[리뷰#2] 대기 중인 신청이 있으면 확정 차단" "d['detail']==[$PEND]"
 req n.jar POST /requests/$PEND/reject '{"reason":"확정 예정"}'
-req n.jar POST /schedules/$YM/confirm; ok 200 "확정"
+req n.jar GET /schedules/$YM; ok 200 "확정 준비 상태 (하드 0·대기 0 → 확정 가능)" 'd["readiness"]["hardViolations"]==0 and d["readiness"]["pendingRequests"]==0 and d["readiness"]["confirmable"] and d["readiness"]["softViolations"]>0'
+req n.jar POST /schedules/$YM/confirm; ok 409 "소프트 위반은 확인 없이 확정 불가" 'd["detail"] and all(v["severity"]=="SOFT" for v in d["detail"])'
+req n.jar POST /schedules/$YM/confirm '{"acknowledgeSoft":true}'; ok 200 "소프트 위반 확인 후 확정"
+req n.jar GET /schedules/$YM; ok 200 "확정 이력 (확정자·횟수)" 'd["confirmation"]["confirmedBy"]=="이간호" and d["confirmation"]["confirmCount"]==1 and d["readiness"]["confirmable"]==False'
 req n.jar POST /requests '{"type":"WISH_OFF","date":"'"$D_L5"'","reasonCode":"ETC"}'; ok 409 "확정된 월에는 신청 불가"
 req h.jar POST /nurses/$HID/retire '{"affiliationEnd":"2099-12-31"}'; ok 200 "수간호사 2명이면 퇴사 가능" 'type(d["violations"])==list'
 CODE=$(curl -s -o out.json -w '%{http_code}' -b h.jar $U/me); ok 200 "퇴사자 me: 소속 없음" 'd["wardId"] is None'
@@ -192,15 +209,18 @@ req n.jar POST /notifications/me/$FID/read; req n.jar GET /notifications/me; ok 
 req n.jar PUT /notifications/me/settings '{"muted":["SCHEDULE_UNCONFIRMED"]}'; ok 200 "알림 종류 끄기"
 req n.jar POST /schedules/$YM/unconfirm '{"reason":""}'; ok 400 "취소 사유 필수"
 req n.jar POST /schedules/$YM/unconfirm '{"reason":"인원 변경"}'; ok 200 "확정 취소"
+req n.jar GET /schedules/$YM; ok 200 "취소 이력 (취소자·사유)" 'd["confirmation"]["unconfirmReason"]=="인원 변경" and d["confirmation"]["unconfirmedBy"]=="이간호" and d["status"]=="DRAFT"'
+req n.jar POST /schedules/$YM/unconfirm '{"reason":"again"}'; ok 409 "초안은 확정 취소 불가"
 req n.jar GET /notifications/me; ok 200 "꺼둔 종류는 알림 안 옴" '"SCHEDULE_UNCONFIRMED" not in {x["type"] for x in d["page"]["content"]}'
-req n.jar POST /schedules/$YM/confirm; ok 200 "재확정"
+req n.jar POST /schedules/$YM/confirm '{"acknowledgeSoft":true}'; ok 200 "재확정"
+req n.jar GET /notifications/me; ok 200 "재확정 안내 문구" 'any("다시 확정" in x["message"] for x in d["page"]["content"])'
 
 echo "■ 근무 전날 리마인드 (10초마다 실행 설정)"
 if [ "$TM" != "$YM" ]; then
   req n.jar POST /schedules/$TM; ok 201 "'내일'이 속한 달($TM) 근무표 생성"
   req n.jar PATCH /schedules/$TM/cells "[$TFIXCELLS]"
   req n.jar POST /schedules/$TM/generate "{\"fixed\":[$TFIXREFS]}"; ok 200 "자동 생성 (하드 위반 0)" 'd["solved"]==True'
-  req n.jar POST /schedules/$TM/confirm; ok 200 "확정"
+  req n.jar POST /schedules/$TM/confirm '{"acknowledgeSoft":true}'; ok 200 "확정"
 fi
 sleep 12
 req n.jar GET /notifications/me; ok 200 "내일($D_T) D 근무 리마인드 수신" "any(x['type']=='DUTY_REMINDER' and '$D_T' in x['message'] for x in d['page']['content'])"

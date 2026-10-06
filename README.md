@@ -11,7 +11,7 @@ docker compose up -d                                   # PostgreSQL (nurs/nurs)
 ```
 
 ### API E2E 점검 (QA)
-빈 DB로 띄운 서버를 상대로 전체 시나리오(114개 항목, PR #14 리뷰 회귀 검사 포함)를 확인한다. 실패가 있으면 종료 코드 1.
+빈 DB로 띄운 서버를 상대로 전체 시나리오(131개 항목, PR #14 리뷰 회귀 검사 포함)를 확인한다. 실패가 있으면 종료 코드 1.
 ```bash
 java -jar build/libs/backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=local --server.port=18080 "--reminder.cron=*/10 * * * * *" &
 scripts/e2e.sh 18080
@@ -38,10 +38,11 @@ scripts/e2e.sh 18080
 | GET | /me | 내 정보·소속 | 로그인 |
 | POST | /wards | 병동 개설, 개설자=수간호사 (AUTH-00) | 소속 없음 |
 | GET | /ward | 내 병동 (코드는 수간호사만) | 소속 |
-| POST | /ward/join `{code}` | 가입 신청 (AUTH-03, 시간당 10회) | 소속 없음 |
+| POST | /ward/join `{code}` | 가입 신청 (AUTH-03, 영문·숫자 6~8자, 시간당 10회). 신청된 병동 이름을 응답 | 소속 없음 |
+| GET / DELETE | /ward/join | 내 최근 가입 신청 상태(대기·승인·반려+사유·취소) / 대기 중 신청 취소 | 로그인 |
 | POST | /ward/code | 코드 재발급 (AUTH-04) | 수간호사 |
 | GET | /ward/join-requests | 가입 대기 목록 | 수간호사 |
-| POST | /ward/join-requests/{id}/approve `{nurseId?}`·reject | AUTH-06. 목록의 `candidates`(같은 이름·계정 없는 간호사) 중 하나를 `nurseId`로 주면 그 행에 계정 연결 | 수간호사 |
+| POST | /ward/join-requests/{id}/approve `{nurseId?}`·reject `{reason?}` | AUTH-06. 목록의 `candidates`(같은 이름·계정 없는 간호사) 중 하나를 `nurseId`로 주면 그 행에 계정 연결 | 수간호사 |
 | POST | /ward/head-transfer `{nurseId, mode: GRANT/TRANSFER}` | AUTH-07 | 수간호사 |
 | GET/PUT | /rules, POST /rules/preset | RULE-01·02·05 | 조회 소속 / 수정 수간호사 |
 | GET/POST/DELETE | /holidays | RULE-03 | 조회 소속 / 수정 수간호사 |
@@ -51,11 +52,12 @@ scripts/e2e.sh 18080
 | GET | /nurses/export `?includeRetired` | 간호사 명단 .xlsx (감사 로그 기록) | 수간호사 |
 | POST | /nurses/import/preview (multipart `file`) | 명단 일괄 등록 1단계: 행별 `{form, errors, warnings}`, 저장 안 함 | 수간호사 |
 | POST | /nurses/import/apply `[form, ...]` | 2단계: 미리보기의 form 배열을 그대로 전송, 하나라도 틀리면 전체 취소 | 수간호사 |
-| POST/GET | /schedules/{yyyy-MM} | SCH-01 생성 / 조회 (간호사는 확정본만) | |
+| POST/GET | /schedules/{yyyy-MM} | SCH-01 생성 / 조회 (간호사는 확정본만). 응답의 `confirmation`은 확정·취소 이력, `readiness`(수간호사만)는 확정 버튼 활성 판단용 | |
 | PATCH | /schedules/{ym}/cells `[{nurseId,date,duty}]` | 일괄 편집, duty=null은 미배정 | 수간호사 |
 | GET | /schedules/{ym}/violations | SCH-06 | 수간호사 |
 | POST | /schedules/{ym}/generate `{fixed?:[{nurseId,date}]}` | GEN-01·05·06 `{solved, wishOffRate, violations}` | 수간호사 |
-| POST | /schedules/{ym}/confirm, /unconfirm `{reason}` | SCH-12 (하드 위반 시 409+detail) | 수간호사 |
+| POST | /schedules/{ym}/confirm `{acknowledgeSoft}` | SCH-12 확정. 대기 신청·하드 위반이 있으면 409, 소프트 위반은 `acknowledgeSoft:true`로 확인해야 확정 (없으면 409+목록) | 수간호사 |
+| POST | /schedules/{ym}/unconfirm `{reason}` | 확정 취소 (사유 필수, 보관된 달은 불가) | 수간호사 |
 | PUT | /schedules/{ym}/off-target `{offTarget}` | RULE-04 수동 조정 (null=자동) | 수간호사 |
 | POST/DELETE | /schedules/{ym}/lock `?force=true` | SCH-13 편집 잠금 (30분 무활동 해제, 편집·생성 시 자동 획득) | 수간호사 |
 | GET | /schedules/{ym}/export | SCH-09 .xlsx (감사 로그 기록) | 수간호사 |

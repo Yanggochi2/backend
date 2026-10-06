@@ -66,10 +66,23 @@ public class ScheduleService {
     /** lock은 수간호사 응답에만, 잠금이 없거나 만료면 null */
     public record ScheduleView(long id, String yearMonth, ScheduleStatus status, int offTarget, Rules rules,
                                List<RuleService.HolidayView> holidays, List<Row> rows,
-                               Map<LocalDate, Map<Duty, Integer>> coverage, List<Stat> stats, LockView lock) {
+                               Map<LocalDate, Map<Duty, Integer>> coverage, List<Stat> stats, LockView lock,
+                               ConfirmationView confirmation, Readiness readiness) {
     }
 
     public record LockView(long userId, String name, Instant lastActivity) {
+    }
+
+    /** SCH-12 확정·확정 취소 이력. 일반 간호사에게도 보인다 (취소 사유는 알림으로도 공지됨) */
+    public record ConfirmationView(Instant confirmedAt, String confirmedBy, Instant unconfirmedAt, String unconfirmedBy,
+                                   String unconfirmReason, int confirmCount) {
+    }
+
+    /** 수간호사 전용: 확정 버튼 활성 여부 판단용. confirmable = 초안 + 하드 위반 0 + 대기 신청 0 */
+    public record Readiness(int hardViolations, int softViolations, int pendingRequests, boolean confirmable) {
+    }
+
+    public record Confirm(boolean acknowledgeSoft) {
     }
 
     /** GEN-05 고정 셀 */
@@ -142,24 +155,30 @@ public class ScheduleService {
 
     /** SCH-12. 하드 위반 0건이어야 확정. 소프트 위반은 응답으로 돌려준다 */
     @Transactional
-    public List<Violation> confirm(long userId, String ym) {
+    public List<Violation> confirm(long userId, String ym, boolean acknowledgeSoft) {
         Member m = members.requireHead(userId);
         Schedule s = draft(m, ym);
-        YearMonth month = YearMonth.parse(s.yearMonth);
         // 리뷰 #2: 확정 후에는 승인해도 반영할 곳이 없으므로, 대기 중인 신청부터 처리하게 한다
-        List<Long> pending = requests.findByWardIdAndStatusAndDateBetween(m.wardId(), RequestStatus.PENDING, month.atDay(1), month.atEndOfMonth())
-                .stream().map(q -> q.id).toList();
+        List<Long> pending = pendingRequests(s);
         if (!pending.isEmpty()) throw ApiException.conflict("처리하지 않은 신청 " + pending.size() + "건이 있습니다", pending);
         List<Violation> v = ScheduleValidator.validate(roster(s));
         if (ScheduleValidator.hasHard(v))
             throw ApiException.conflict("하드 위반이 있어 확정할 수 없습니다", v.stream().filter(x -> x.severity() == Severity.HARD).toList());
+        // SCH-12: 소프트 위반은 "확인 후" 확정 가능. 확인 없이 보내면 목록을 돌려준다
+        if (!v.isEmpty() && !acknowledgeSoft)
+            throw ApiException.conflict("소프트 위반 " + v.size() + "건을 확인한 뒤 확정하세요", v);
         s.status = ScheduleStatus.CONFIRMED;
         s.lockedBy = null;
+        s.confirmedAt = Instant.now();
+        s.confirmedBy = userId;
+        s.confirmCount++;
         schedules.findByWardIdAndStatusIn(m.wardId(), List.of(ScheduleStatus.CONFIRMED)).stream()
                 .filter(o -> o.yearMonth.compareTo(s.yearMonth) < 0)
                 .forEach(o -> o.status = ScheduleStatus.ARCHIVED);
         audit.log(m.wardId(), userId, "SCHEDULE_CONFIRMED", "schedule:" + s.yearMonth, ScheduleStatus.DRAFT, ScheduleStatus.CONFIRMED);
-        notifications.notifyWard(m.wardId(), NotificationType.SCHEDULE_CONFIRMED, s.yearMonth + " 근무표가 확정되었습니다");
+        notifications.notifyWard(m.wardId(), NotificationType.SCHEDULE_CONFIRMED, s.confirmCount > 1
+                ? s.yearMonth + " 근무표가 다시 확정되었습니다. 변경된 근무를 확인하세요"
+                : s.yearMonth + " 근무표가 확정되었습니다");
         return v;
     }
 
@@ -167,8 +186,12 @@ public class ScheduleService {
     public void unconfirm(long userId, String ym, String reason) {
         Member m = members.requireHead(userId);
         Schedule s = find(m, ym);
+        if (s.status == ScheduleStatus.ARCHIVED) throw ApiException.conflict("다음 달이 확정되어 보관된 근무표는 취소할 수 없습니다");
         if (s.status != ScheduleStatus.CONFIRMED) throw ApiException.conflict("확정 상태가 아닙니다");
         s.status = ScheduleStatus.DRAFT;
+        s.unconfirmedAt = Instant.now();
+        s.unconfirmedBy = userId;
+        s.unconfirmReason = reason;
         audit.log(m.wardId(), userId, "SCHEDULE_UNCONFIRMED", "schedule:" + s.yearMonth, "reason=" + reason, ScheduleStatus.DRAFT);
         notifications.notifyWard(m.wardId(), NotificationType.SCHEDULE_UNCONFIRMED,
                 s.yearMonth + " 근무표 확정이 취소되었습니다. 재확정 시 다시 알려드립니다. 사유: " + reason);
@@ -262,6 +285,29 @@ public class ScheduleService {
         return new LockView(s.lockedBy, users.findById(s.lockedBy).map(u -> u.name).orElse(null), s.lockedAt);
     }
 
+    private List<Long> pendingRequests(Schedule s) {
+        YearMonth month = YearMonth.parse(s.yearMonth);
+        return requests.findByWardIdAndStatusAndDateBetween(s.wardId, RequestStatus.PENDING, month.atDay(1), month.atEndOfMonth())
+                .stream().map(q -> q.id).toList();
+    }
+
+    private ConfirmationView confirmation(Schedule s) {
+        if (s.confirmCount == 0 && s.unconfirmedAt == null) return null;
+        return new ConfirmationView(s.confirmedAt, userName(s.confirmedBy), s.unconfirmedAt, userName(s.unconfirmedBy),
+                s.unconfirmReason, s.confirmCount);
+    }
+
+    private Readiness readiness(Schedule s, Roster r) {
+        List<Violation> v = ScheduleValidator.validate(r);
+        int hard = (int) v.stream().filter(x -> x.severity() == Severity.HARD).count();
+        int pending = pendingRequests(s).size();
+        return new Readiness(hard, v.size() - hard, pending, s.status == ScheduleStatus.DRAFT && hard == 0 && pending == 0);
+    }
+
+    private String userName(Long id) {
+        return id == null ? null : users.findById(id).map(u -> u.name).orElse(null);
+    }
+
     /** NUR-04·05·09에서 호출. 확정본은 자동 변경하지 않고 위반만 돌려준다 */
     List<Violation> violationsFor(long wardId, long nurseId) {
         return schedules.findByWardIdAndStatusIn(wardId, List.of(ScheduleStatus.DRAFT, ScheduleStatus.CONFIRMED)).stream()
@@ -303,7 +349,7 @@ public class ScheduleService {
                 .toList();
         return new ScheduleView(s.id, s.yearMonth, s.status, r.offTarget(), r.rules(),
                 rules.inMonth(s.wardId, r.month()).stream().map(h -> new RuleService.HolidayView(h.id, h.date, h.name)).toList(),
-                rows, coverage, stats, m.isHead() ? lockView(s) : null);
+                rows, coverage, stats, m.isHead() ? lockView(s) : null, confirmation(s), m.isHead() ? readiness(s, r) : null);
     }
 
     private Stat stat(Roster r, long nurseId, Set<LocalDate> holidays) {
