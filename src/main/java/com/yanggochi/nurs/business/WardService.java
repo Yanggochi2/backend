@@ -14,18 +14,12 @@ import org.springframework.transaction.annotation.Transactional;
 import java.security.SecureRandom;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.temporal.ChronoUnit;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 /** AUTH-00·03·04·06·07 */
 @Service
 public class WardService {
     private static final String CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-    private static final int JOIN_ATTEMPTS_PER_HOUR = 10;
 
     private final WardRepository wards;
     private final NurseRepository nurses;
@@ -35,8 +29,8 @@ public class WardService {
     private final AuditService audit;
     private final NotificationService notifications;
     private final SecureRandom random = new SecureRandom();
-    // ponytail: 인메모리 시도 횟수 제한. 서버 다중화 시 Redis 등 공유 저장소로
-    private final Map<Long, Deque<Instant>> joinAttempts = new ConcurrentHashMap<>();
+    /** AUTH-03 코드 무차별 대입 방지: 계정당 시간당 10회 (🔶 권장값) */
+    private final RateLimiter joinAttempts = new RateLimiter(10, java.time.Duration.ofHours(1));
 
     public WardService(WardRepository wards, NurseRepository nurses, UserRepository users, JoinRequestRepository joins,
                        MemberService members, AuditService audit, NotificationService notifications) {
@@ -94,7 +88,8 @@ public class WardService {
 
     @Transactional
     public void join(long userId, String code) {
-        rateLimit(userId);
+        joinAttempts.check(userId);
+        joinAttempts.record(userId);
         if (members.membership(userId).isPresent()) throw ApiException.conflict("이미 소속된 병동이 있습니다");
         if (joins.existsByUserIdAndStatus(userId, RequestStatus.PENDING)) throw ApiException.conflict("승인 대기 중인 신청이 있습니다");
         Ward w = wards.findByCode(code == null ? "" : code.trim().toUpperCase())
@@ -171,16 +166,6 @@ public class WardService {
         target.role = Role.HEAD_NURSE;
         if (mode == TransferMode.TRANSFER) nurses.findById(m.nurseId()).orElseThrow().role = Role.NURSE;
         audit.log(m.wardId(), userId, "HEAD_" + mode, "nurse:" + nurseId, null, null);
-    }
-
-    private void rateLimit(long userId) {
-        Deque<Instant> q = joinAttempts.computeIfAbsent(userId, k -> new ArrayDeque<>());
-        synchronized (q) {
-            Instant cutoff = Instant.now().minus(1, ChronoUnit.HOURS);
-            while (!q.isEmpty() && q.peekFirst().isBefore(cutoff)) q.pollFirst();
-            if (q.size() >= JOIN_ATTEMPTS_PER_HOUR) throw new ApiException(429, "잠시 후 다시 시도하세요", null);
-            q.addLast(Instant.now());
-        }
     }
 
     private String newCode() {

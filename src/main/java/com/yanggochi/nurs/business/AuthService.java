@@ -55,11 +55,21 @@ public class AuthService {
         return users.save(u).id;
     }
 
+    /** 리뷰 #8: 이메일별 로그인 실패 15분에 5회까지. 성공하면 초기화 */
+    private final RateLimiter loginFailures = new RateLimiter(5, java.time.Duration.ofMinutes(15));
+
     @Transactional
     public long login(Login l) {
-        User u = users.findByEmail(l.email().trim().toLowerCase())
+        String email = l.email().trim().toLowerCase();
+        loginFailures.check(email);
+        User u = users.findByEmail(email)
                 .filter(x -> encoder.matches(l.password(), x.passwordHash))
-                .orElseThrow(() -> ApiException.unauthorized("이메일 또는 비밀번호가 올바르지 않습니다"));
+                .orElse(null);
+        if (u == null) {
+            loginFailures.record(email);
+            throw ApiException.unauthorized("이메일 또는 비밀번호가 올바르지 않습니다");
+        }
+        loginFailures.reset(email);
         audit.log(wardOf(u.id), u.id, "LOGIN", "user:" + u.id, null, null);
         return u.id;
     }
