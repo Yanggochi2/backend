@@ -11,6 +11,8 @@ import static com.yanggochi.nurs.domain.Severity.SOFT;
 
 /** SCH-06. 프레임워크에 의존하지 않는 순수 규칙 검증. */
 public final class ScheduleValidator {
+    /** 이전 달을 거슬러 볼 일수. 연속 규칙 최대값(31)을 덮는다 */
+    private static final int LOOKBACK_DAYS = 31;
 
     private ScheduleValidator() {
     }
@@ -24,6 +26,13 @@ public final class ScheduleValidator {
             int nights = 0, work = 0, offs = 0;
             Duty prev = null;
             Set<LocalDate> wish = r.wishOffs().getOrDefault(n.id(), Set.of());
+            // 이전 달 말의 연속 근무를 먼저 세어 둔다. 위반은 이번 달 날짜만 보고한다
+            for (LocalDate d = days.get(0).minusDays(LOOKBACK_DAYS); d.isBefore(days.get(0)); d = d.plusDays(1)) {
+                Duty x = r.cell(n.id(), d);
+                nights = x == Duty.N ? nights + 1 : 0;
+                work = x != null && x.isWork() ? work + 1 : 0;
+                prev = x;
+            }
             for (LocalDate d : days) {
                 Duty x = r.cell(n.id(), d);
                 if (x != null && !n.affiliated(d))
@@ -45,6 +54,9 @@ public final class ScheduleValidator {
                 if (x == Duty.O || x == Duty.AL) offs++;
                 if (wish.contains(d) && x != Duty.O && x != Duty.AL)
                     out.add(new Violation(SOFT, "WISH_OFF_IGNORED", n.id(), d, x, "희망 오프 미반영"));
+                Duty wishDuty = r.wishDuty(n.id(), d);
+                if (wishDuty != null && x != wishDuty && x != Duty.AL)
+                    out.add(new Violation(SOFT, "WISH_DUTY_IGNORED", n.id(), d, x, "희망 근무 " + wishDuty + " 미반영"));
                 for (long p : n.preceptees()) {
                     Duty other = r.cell(p, d);
                     if (x != null && x.isWork() && other != null && other.isWork() && x != other)

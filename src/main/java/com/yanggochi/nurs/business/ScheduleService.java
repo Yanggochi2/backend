@@ -187,8 +187,7 @@ public class ScheduleService {
         r.cells().forEach((nurseId, row) -> row.forEach((d, x) -> {
             if (x == Duty.AL || keep.contains(nurseId + "/" + d)) kept.computeIfAbsent(nurseId, k -> new HashMap<>()).put(d, x);
         }));
-        Map<Long, Map<LocalDate, Duty>> cells = ScheduleGenerator.generate(
-                new Roster(r.month(), r.nurses(), kept, r.rules(), r.offTarget(), r.wishOffs()));
+        Map<Long, Map<LocalDate, Duty>> cells = ScheduleGenerator.generate(r.withCells(kept));
         assignments.deleteByScheduleId(s.id);
         assignments.flush();
         cells.forEach((nurseId, row) -> row.forEach((d, duty) -> assignments.save(new Assignment(s.id, nurseId, d, duty))));
@@ -331,7 +330,14 @@ public class ScheduleService {
         Map<Long, Set<LocalDate>> wish = new HashMap<>();
         approved(s.wardId, month, RequestType.WISH_OFF)
                 .forEach(q -> wish.computeIfAbsent(q.nurseId, k -> new HashSet<>()).add(q.date));
-        return new Roster(month, ns, cells, w.rules(), offTarget(s), wish);
+        Map<Long, Map<LocalDate, Duty>> wishDuties = new HashMap<>();
+        approved(s.wardId, month, RequestType.WISH_DUTY)
+                .forEach(q -> wishDuties.computeIfAbsent(q.nurseId, k -> new HashMap<>()).put(q.date, q.duty));
+        // 리뷰 #1: 연속 야간·근무를 월 경계 너머로 세기 위해 이전 달 근무표를 함께 넘긴다
+        Map<Long, Map<LocalDate, Duty>> before = new HashMap<>();
+        schedules.findByWardIdAndYearMonth(s.wardId, month.minusMonths(1).toString()).ifPresent(prev ->
+                assignments.findByScheduleId(prev.id).forEach(a -> before.computeIfAbsent(a.nurseId, k -> new HashMap<>()).put(a.date, a.duty)));
+        return new Roster(month, ns, cells, w.rules(), offTarget(s), wish, wishDuties, before);
     }
 
     /** RULE-04: 공휴일 수 + 1. ponytail: 주휴일 포함 여부 🔶 미확정이라 공휴일만 센다 */

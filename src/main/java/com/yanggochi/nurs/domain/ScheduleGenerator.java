@@ -10,7 +10,7 @@ import java.util.Set;
 
 /**
  * GEN-01. 날짜 순 그리디 편성. 입력 셀(연차 AL, GEN-05 고정 셀)은 그대로 두고 빈 칸만 채운다.
- * 희망 오프는 후순위 배정(소프트).
+ * 희망 오프는 후순위, 희망 근무는 해당 듀티에 우선 배정(소프트). 이전 달 말 근무(Roster.before)를 이어서 센다.
  * ponytail: 그리디라 최적해 보장 없음. 해 품질이 부족하면 OR-Tools CP-SAT 등 솔버로 교체.
  */
 public final class ScheduleGenerator {
@@ -23,7 +23,7 @@ public final class ScheduleGenerator {
         for (NurseInfo n : r.nurses()) {
             cells.put(n.id(), new HashMap<>(r.cells().getOrDefault(n.id(), Map.of())));
         }
-        Roster cur = new Roster(r.month(), r.nurses(), cells, r.rules(), r.offTarget(), r.wishOffs());
+        Roster cur = r.withCells(cells);
         Map<Long, Integer> worked = new HashMap<>();
 
         for (LocalDate d : r.days()) {
@@ -34,6 +34,7 @@ public final class ScheduleGenerator {
                         .sorted(Comparator
                                 .comparing((NurseInfo n) -> duty == Duty.N && n.dutyRole() == DutyRole.NEW)
                                 .thenComparing(n -> r.wishOffs().getOrDefault(n.id(), Set.of()).contains(d))
+                                .thenComparing(n -> r.wishDuty(n.id(), d) != duty)
                                 .thenComparing(n -> worked.getOrDefault(n.id(), 0)))
                         .limit(Math.max(0, need))
                         .toList());
