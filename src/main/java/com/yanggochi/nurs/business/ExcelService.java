@@ -37,10 +37,15 @@ public class ExcelService {
         this.audit = audit;
     }
 
-    public record ImportRow(int rowNumber, String name, Long nurseId) {
+    /**
+     * nurseId: 이름이 한 명과만 일치할 때. 동명이인이면 null이고 candidates 중에서 사용자가 고른다.
+     * warning: 동명이인 / 미등록 이름 / 같은 간호사가 여러 행
+     */
+    public record ImportRow(int rowNumber, String name, Long nurseId, List<Long> candidates, String warning) {
     }
 
-    public record ImportCell(long nurseId, LocalDate date, String raw) {
+    /** nurseId가 null인 셀은 같은 rowNumber 행의 간호사를 사용자가 지정한 뒤 apply로 보낸다 */
+    public record ImportCell(int rowNumber, Long nurseId, LocalDate date, String raw) {
     }
 
     /** codes: 파일에 나온 코드별 제안 듀티(null = 인식 불가, 사용자가 지정해야 함) */
@@ -108,8 +113,10 @@ public class ExcelService {
         members.requireHead(userId);
         ScheduleService.ScheduleView v = schedules.get(userId, ym);
         YearMonth month = YearMonth.parse(v.yearMonth());
-        Map<String, Long> byName = new HashMap<>();
-        v.rows().forEach(row -> byName.put(row.name().trim(), row.nurseId()));
+        // 리뷰 #6: 동명이인이 있으면 한 사람에게 몰아 넣지 않도록 이름별 후보를 모두 모은다
+        Map<String, List<Long>> byName = new HashMap<>();
+        v.rows().forEach(row -> byName.computeIfAbsent(row.name().trim(), k -> new ArrayList<>()).add(row.nurseId()));
+        Set<Long> seen = new HashSet<>();
 
         List<ImportRow> rows = new ArrayList<>();
         Map<String, Duty> codes = new TreeMap<>();
@@ -131,14 +138,18 @@ public class ExcelService {
                 if (x == null) continue;
                 String name = fmt.formatCellValue(x.getCell(0)).trim();
                 if (name.isEmpty()) continue;
-                Long nurseId = byName.get(name);
-                rows.add(new ImportRow(i + 1, name, nurseId));
-                if (nurseId == null) continue;
+                List<Long> candidates = byName.getOrDefault(name, List.of());
+                Long nurseId = candidates.size() == 1 ? candidates.get(0) : null;
+                String warning = candidates.isEmpty() ? "등록되지 않은 이름입니다"
+                        : candidates.size() > 1 ? "동명이인 " + candidates.size() + "명 — 간호사를 지정하세요"
+                        : !seen.add(nurseId) ? "같은 간호사가 여러 행에 있습니다" : null;
+                rows.add(new ImportRow(i + 1, name, nurseId, candidates, warning));
+                if (candidates.isEmpty()) continue;
                 for (var e : dayCols.entrySet()) {
                     String raw = fmt.formatCellValue(x.getCell(e.getKey())).trim().toUpperCase();
                     if (raw.isEmpty()) continue;
                     codes.computeIfAbsent(raw, ExcelService::suggest);
-                    cells.add(new ImportCell(nurseId, e.getValue(), raw));
+                    cells.add(new ImportCell(i + 1, nurseId, e.getValue(), raw));
                 }
             }
         } catch (IOException | RuntimeException e) {
