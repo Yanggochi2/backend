@@ -11,5 +11,7 @@ import java.util.Optional;
 public interface ShiftRequestRepository extends JpaRepository<ShiftRequest, Long>, JpaSpecificationExecutor<ShiftRequest> {
     Optional<ShiftRequest> findByIdAndWardId(Long id, Long wardId);
 
+    boolean existsByNurseIdAndDateAndStatusIn(Long nurseId, LocalDate date, List<RequestStatus> statuses);
+
     List<ShiftRequest> findByWardIdAndStatusAndDateBetween(Long wardId, RequestStatus status, LocalDate from, LocalDate to);
 }

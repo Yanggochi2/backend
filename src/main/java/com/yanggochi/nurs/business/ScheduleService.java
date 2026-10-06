@@ -145,6 +145,11 @@ public class ScheduleService {
     public List<Violation> confirm(long userId, String ym) {
         Member m = members.requireHead(userId);
         Schedule s = draft(m, ym);
+        YearMonth month = YearMonth.parse(s.yearMonth);
+        // 리뷰 #2: 확정 후에는 승인해도 반영할 곳이 없으므로, 대기 중인 신청부터 처리하게 한다
+        List<Long> pending = requests.findByWardIdAndStatusAndDateBetween(m.wardId(), RequestStatus.PENDING, month.atDay(1), month.atEndOfMonth())
+                .stream().map(q -> q.id).toList();
+        if (!pending.isEmpty()) throw ApiException.conflict("처리하지 않은 신청 " + pending.size() + "건이 있습니다", pending);
         List<Violation> v = ScheduleValidator.validate(roster(s));
         if (ScheduleValidator.hasHard(v))
             throw ApiException.conflict("하드 위반이 있어 확정할 수 없습니다", v.stream().filter(x -> x.severity() == Severity.HARD).toList());

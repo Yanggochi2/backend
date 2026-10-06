@@ -17,12 +17,14 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
+import java.util.List;
 import java.util.Set;
 
 /** REQ-01·02·03·07 */
 @Service
 public class RequestService {
     /** REQ-02 🔶 사유 코드 미확정 — 명세 예시값 사용 */
+    private static final java.time.ZoneId SEOUL = java.time.ZoneId.of("Asia/Seoul");
     private static final Set<String> REASON_CODES = Set.of("PERSONAL", "FAMILY", "HEALTH", "STUDY", "ETC");
 
     private final ShiftRequestRepository requests;
@@ -58,9 +60,13 @@ public class RequestService {
         Member m = members.require(userId);
         if (f.type() == RequestType.WISH_DUTY && (f.duty() == null || !f.duty().isWork()))
             throw ApiException.badRequest("희망 근무는 D/E/N 중 하나여야 합니다");
-        if (f.type() == RequestType.WISH_OFF && !REASON_CODES.contains(f.reasonCode()))
+        // 사유는 종류와 무관하게 코드값만 받는다. 희망 오프는 필수 (REQ-02)
+        if ((f.reasonCode() != null && !REASON_CODES.contains(f.reasonCode())) || (f.type() == RequestType.WISH_OFF && f.reasonCode() == null))
             throw ApiException.badRequest("사유 코드: " + REASON_CODES);
+        if (f.date().isBefore(LocalDate.now(SEOUL))) throw ApiException.badRequest("지난 날짜는 신청할 수 없습니다");
         if (schedules.isLocked(m.wardId(), f.date())) throw ApiException.conflict("이미 확정된 월입니다");
+        if (requests.existsByNurseIdAndDateAndStatusIn(m.nurseId(), f.date(), List.of(RequestStatus.PENDING, RequestStatus.APPROVED)))
+            throw ApiException.conflict("같은 날짜에 이미 신청이 있습니다");
         ShiftRequest r = new ShiftRequest();
         r.wardId = m.wardId();
         r.nurseId = m.nurseId();
@@ -89,6 +95,9 @@ public class RequestService {
         Member m = members.requireHead(userId);
         ShiftRequest r = requests.findByIdAndWardId(id, m.wardId()).orElseThrow(ApiException::notFound);
         if (r.status != RequestStatus.PENDING) throw ApiException.conflict("이미 처리된 신청입니다");
+        // 확정본에는 반영할 수 없으므로 승인을 막는다 (반려는 허용)
+        if (approve && schedules.isLocked(m.wardId(), r.date))
+            throw ApiException.conflict("확정된 근무표의 신청입니다. 확정 취소 후 승인하세요");
         r.status = approve ? RequestStatus.APPROVED : RequestStatus.REJECTED;
         r.processedBy = userId;
         r.processedAt = Instant.now();
