@@ -3,8 +3,9 @@ API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 항상 �
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, Header, Request, Response
 
 from app.business import (auth, nurses, schedules, wards)
 from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role, Severity
@@ -13,6 +14,7 @@ from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, U
                                    set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
+LockToken = Annotated[str | None, Header(alias="X-Schedule-Lock-Token")]
 
 
 def _d(x) -> dict:
@@ -147,9 +149,9 @@ def get_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
 
 
 @api.patch("/wards/me/schedules/{schedule_id}/cells")
-def edit_cells(schedule_id: uuid.UUID, body: s.CellBulkPatch, user_id: UserId, db: DB):
+def edit_cells(schedule_id: uuid.UUID, body: s.CellBulkPatch, user_id: UserId, db: DB, lock: LockToken = None):
     changes = [(c.nurse_id, c.date, c.duty_code) for c in body.changes]
-    return _d(schedules.edit_cells(db, user_id, schedule_id, body.base_version, changes))
+    return _d(schedules.edit_cells(db, user_id, schedule_id, body.base_version, changes, lock))
 
 
 @api.get("/wards/me/schedules/{schedule_id}/coverage")
@@ -171,3 +173,18 @@ def confirm(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Confirm | N
 @api.post("/wards/me/schedules/{schedule_id}/confirmation-cancellations")
 def cancel_confirmation(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
     return _d(schedules.cancel_confirmation(db, user_id, schedule_id, body.reason if body else None))
+
+
+@api.post("/wards/me/schedules/{schedule_id}/lock", status_code=201)
+def acquire_lock(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(schedules.acquire_lock(db, user_id, schedule_id))
+
+
+@api.delete("/wards/me/schedules/{schedule_id}/lock", status_code=204)
+def release_lock(schedule_id: uuid.UUID, user_id: UserId, db: DB, lock: LockToken = None):
+    schedules.release_lock(db, user_id, schedule_id, lock)
+
+
+@api.post("/wards/me/schedules/{schedule_id}/lock/takeover")
+def take_over_lock(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
+    return _d(schedules.take_over_lock(db, user_id, schedule_id, body.reason if body else None))

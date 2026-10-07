@@ -136,7 +136,12 @@ class Schedule(Base):
     cancelled_by: Mapped[uuid.UUID | None]
     cancel_reason: Mapped[str | None] = mapped_column(String(500))
     confirm_count: Mapped[int] = mapped_column(default=0)
-    # 내용(셀·상태) 버전. 조건부 UPDATE로 올린다 (schedules.touch)
+    # SCH-11 편집 잠금. 토큰은 해시만 저장
+    locked_by: Mapped[uuid.UUID | None]
+    locked_at: Mapped[datetime | None]
+    lock_activity_at: Mapped[datetime | None]
+    lock_token_hash: Mapped[str | None] = mapped_column(String(64))
+    # 내용(셀·상태) 버전. 잠금 획득·해제로는 오르지 않는다. 조건부 UPDATE로 올린다 (schedules.touch)
     updated_at: Mapped[datetime] = mapped_column(default=now)
     version: Mapped[int] = mapped_column(default=1)
 
