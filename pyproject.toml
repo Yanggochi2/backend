@@ -1,0 +1,24 @@
+[project]
+name = "nurs-backend"
+version = "0.1.0"
+description = "병동 근무표 서비스 백엔드"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy>=2",
+    "psycopg[binary]",
+    "pydantic[email]",
+    "bcrypt",
+    "openpyxl",
+    "python-multipart",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
