@@ -1,8 +1,11 @@
 """병동 근무표 서비스 백엔드. 실행: uv run uvicorn app.main:app --reload"""
+import asyncio
 import logging
+import os
 import re
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
@@ -10,21 +13,48 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import StaleDataError
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.business.common import ApiException, iso
+from app.business import notifications
+from app.business.common import KST, ApiException, iso
 from app.persistence import models  # noqa: F401 (테이블 등록)
-from app.persistence.db import Base, engine, now
+from app.persistence.db import Base, SessionLocal, engine, now
 from app.presentation.routes import api
 
 log = logging.getLogger("nurs")
+
+
+def _remind() -> None:
+    with SessionLocal() as db:
+        notifications.remind_tomorrow(db)
+        db.commit()
+
+
+async def _reminder_loop() -> None:
+    """근무 전날 리마인드: 매일 18시(KST). 테스트에서는 REMINDER_EVERY_SECONDS로 주기를 줄인다"""
+    every = os.getenv("REMINDER_EVERY_SECONDS")
+    while True:
+        if every:
+            wait = int(every)
+        else:
+            now = datetime.now(KST)
+            nxt = now.replace(hour=18, minute=0, second=0, microsecond=0)
+            wait = ((nxt if nxt > now else nxt + timedelta(days=1)) - now).total_seconds()
+        await asyncio.sleep(wait)
+        try:
+            await run_in_threadpool(_remind)
+        except Exception:
+            log.exception("리마인드 실패")
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # ponytail: 시작 시 테이블 자동 생성. 운영 배포 전 Alembic 마이그레이션으로 전환 (Yanggochi2/backend#24)
     Base.metadata.create_all(engine)
+    task = asyncio.create_task(_reminder_loop())
     yield
+    task.cancel()
 
 
 app = FastAPI(title="병동 근무표 API", version="1.0", lifespan=lifespan)

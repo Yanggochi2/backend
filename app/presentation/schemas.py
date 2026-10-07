@@ -179,3 +179,15 @@ class WorkRequestCreate(Body):
     reason_code: str
     reason_detail: str | None = Field(None, max_length=500)
     preferred_duty: Duty | None = None
+
+
+class NotificationPatch(Body):
+    read: bool
+
+
+class NotificationSettingsPatch(Body):
+    schedule_confirmed: bool | None = None
+    schedule_cancelled: bool | None = None
+    request_result: bool | None = None
+    duty_reminder: bool | None = None
+    web_push: bool | None = None
