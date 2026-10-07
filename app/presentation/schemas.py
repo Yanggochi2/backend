@@ -7,7 +7,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import DutyRole, NurseStatus, Preset
+from app.domain.model import Duty, DutyRole, NurseStatus, Preset
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -96,3 +96,22 @@ class NursePatch(Body):
 
 class Retire(Body):
     affiliation_end: date
+
+
+class ScheduleCreate(Body):
+    year_month: str
+
+
+class CellChange(Body):
+    nurse_id: uuid.UUID
+    date: date
+    duty_code: Duty | None  # 키는 필수, null = 미배정
+
+
+class CellBulkPatch(Body):
+    base_version: int
+    changes: list[CellChange] = Field(min_length=1)
+
+
+class Confirm(Body):
+    acknowledged_soft_violation_ids: list[uuid.UUID] = []

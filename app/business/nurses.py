@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.business import audit, members, wards
+from app.business import audit, members, schedules, wards
 from app.business.common import (bad_request, conflict, iso, not_found, page, parse_sort, unprocessable)
 from app.business.members import Member
 from app.domain.model import DutyRole, NurseStatus, Role
@@ -127,7 +127,7 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
 def _result(db: Session, m: Member, n: Nurse) -> dict:
     no_charge = not db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.duty_role == DutyRole.CHARGE,
                                                      Nurse.status != NurseStatus.RETIRED))
-    return {"nurse": view(n, True), "violations": [],  # 영향받는 근무표 위반은 근무표 기능에서 채운다
+    return {"nurse": view(n, True), "violations": schedules.violations_for(db, m.ward_id, n.id),
             "warnings": ["병동에 차지 간호사가 없습니다"] if no_charge else []}
 
 

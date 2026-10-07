@@ -6,8 +6,8 @@ import uuid
 
 from fastapi import APIRouter, Request, Response
 
-from app.business import (auth, nurses, wards)
-from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role
+from app.business import (auth, nurses, schedules, wards)
+from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
@@ -128,3 +128,46 @@ def patch_nurse(nurse_id: uuid.UUID, body: s.NursePatch, user_id: UserId, db: DB
 @api.post("/wards/me/nurses/{nurse_id}/retire")
 def retire_nurse(nurse_id: uuid.UUID, body: s.Retire, user_id: UserId, db: DB):
     return _d(nurses.retire(db, user_id, nurse_id, body.affiliation_end))
+
+
+# --- 근무표 (SCH)
+@api.post("/wards/me/schedules", status_code=201)
+def create_schedule(body: s.ScheduleCreate, user_id: UserId, db: DB):
+    return _d(schedules.create(db, user_id, body.year_month))
+
+
+@api.get("/wards/me/schedules")
+def schedule_by_month(yearMonth: str, user_id: UserId, db: DB):  # noqa: N803
+    return _d(schedules.get_by_month(db, user_id, yearMonth))
+
+
+@api.get("/wards/me/schedules/{schedule_id}")
+def get_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(schedules.get(db, user_id, schedule_id))
+
+
+@api.patch("/wards/me/schedules/{schedule_id}/cells")
+def edit_cells(schedule_id: uuid.UUID, body: s.CellBulkPatch, user_id: UserId, db: DB):
+    changes = [(c.nurse_id, c.date, c.duty_code) for c in body.changes]
+    return _d(schedules.edit_cells(db, user_id, schedule_id, body.base_version, changes))
+
+
+@api.get("/wards/me/schedules/{schedule_id}/coverage")
+def coverage(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(schedules.coverage(db, user_id, schedule_id))
+
+
+@api.get("/wards/me/schedules/{schedule_id}/violations")
+def violations(schedule_id: uuid.UUID, user_id: UserId, db: DB, p: Page, severity: Severity | None = None,
+               nurseId: uuid.UUID | None = None, ruleId: uuid.UUID | None = None):  # noqa: N803
+    return schedules.violations(db, user_id, schedule_id, severity, nurseId, ruleId, p.page, p.size)
+
+
+@api.post("/wards/me/schedules/{schedule_id}/confirm")
+def confirm(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Confirm | None = None):
+    return _d(schedules.confirm(db, user_id, schedule_id, set(body.acknowledged_soft_violation_ids if body else [])))
+
+
+@api.post("/wards/me/schedules/{schedule_id}/confirmation-cancellations")
+def cancel_confirmation(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
+    return _d(schedules.cancel_confirmation(db, user_id, schedule_id, body.reason if body else None))

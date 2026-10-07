@@ -82,3 +82,15 @@ def add_nurses(h: Api, count: int, prefix="간호사", **fields) -> list[str]:
     return [h.data("POST", "/wards/me/nurses", {**NURSE, "name": f"{prefix}{i:02}", **fields}, status=201)["id"]
             for i in range(count)]
 
+
+def fill_rotation(h: Api, s: dict) -> dict:
+    """
+    간호사 5명을 D,E,N,O,O 순환으로 하루씩 밀어 채운다 → 매일 D·E·N 1명씩, 하드 위반 없음.
+    필요 인원 1/1/1 병동에서 자동 생성 없이 확정 가능한 근무표를 만들 때 쓴다
+    """
+    pattern = ["D", "E", "N", "O", "O"]
+    days = sorted({c["date"] for c in s["cells"]})
+    changes = [{"nurseId": n["id"], "date": d, "dutyCode": pattern[(i + j) % 5]}
+               for i, n in enumerate(s["nurses"]) for j, d in enumerate(days)]
+    h.data("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": s["version"], "changes": changes})
+    return h.data("GET", f"/wards/me/schedules/{s['id']}")
