@@ -1,12 +1,13 @@
 """요청 본문 검증. JSON 필드는 camelCase, 파이썬 속성은 snake_case"""
 import re
 import uuid
+from datetime import date
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import Preset
+from app.domain.model import DutyRole, NurseStatus, Preset
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -64,3 +65,34 @@ class Reason(Body):
 
 class Transfer(Body):
     target_nurse_id: uuid.UUID
+
+
+class NurseCreate(Body):
+    name: Name
+    duty_role: DutyRole
+    status: NurseStatus
+    joined_at: date
+    career_months: int = Field(ge=0)
+    skill_level: int = Field(ge=1, le=5)
+    affiliation_start: date
+    affiliation_end: date | None = None
+    preceptor_of: list[uuid.UUID] | None = None
+
+
+class NursePatch(Body):
+    """부분 수정. role 등 정의하지 않은 필드는 400 (권한 변경은 AUTH-07로만)"""
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    name: Name | None = None
+    duty_role: DutyRole | None = None
+    status: NurseStatus | None = None
+    joined_at: date | None = None
+    career_months: int | None = Field(None, ge=0)
+    skill_level: int | None = Field(None, ge=1, le=5)
+    affiliation_start: date | None = None
+    affiliation_end: date | None = None
+    preceptor_of: list[uuid.UUID] | None = None
+    version: int | None = None
+
+
+class Retire(Body):
+    affiliation_end: date
