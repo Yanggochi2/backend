@@ -73,3 +73,12 @@ def member(h: Api, name="간호사") -> tuple[Api, str]:
     rid = n.data("POST", "/ward-membership-requests", {"joinCode": code})["id"]
     return n, h.data("POST", f"/wards/me/membership-requests/{rid}/approve")["id"]
 
+
+NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedAt": "2025-01-01", "careerMonths": 12, "skillLevel": 3,
+         "affiliationStart": "2025-01-01"}
+
+
+def add_nurses(h: Api, count: int, prefix="간호사", **fields) -> list[str]:
+    return [h.data("POST", "/wards/me/nurses", {**NURSE, "name": f"{prefix}{i:02}", **fields}, status=201)["id"]
+            for i in range(count)]
+
