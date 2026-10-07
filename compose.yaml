@@ -1,0 +1,29 @@
+# docker compose up --build  →  http://localhost:8000/docs
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: nurs
+      POSTGRES_USER: nurs
+      POSTGRES_PASSWORD: nurs
+    # 호스트의 5432와 충돌하지 않도록 포트를 열지 않는다. api는 내부 네트워크(postgres:5432)로 접속
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nurs -d nurs"]
+      interval: 2s
+      retries: 30
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://nurs:nurs@postgres:5432/nurs
+      COOKIE_SECURE: "false"  # 로컬 http. HTTPS 배포에서는 true
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
