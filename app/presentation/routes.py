@@ -3,11 +3,13 @@ API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 항상 �
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
+from datetime import date
 from typing import Annotated
 
 from fastapi import APIRouter, Header, Request, Response
 
-from app.business import (auth, nurses, schedules, wards)
+from app.business import (auth, nurses, rules, schedules, wards)
+from app.business.common import parse_month
 from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
@@ -130,6 +132,43 @@ def patch_nurse(nurse_id: uuid.UUID, body: s.NursePatch, user_id: UserId, db: DB
 @api.post("/wards/me/nurses/{nurse_id}/retire")
 def retire_nurse(nurse_id: uuid.UUID, body: s.Retire, user_id: UserId, db: DB):
     return _d(nurses.retire(db, user_id, nurse_id, body.affiliation_end))
+
+
+# --- 근무 규칙 (RULE)
+@api.get("/wards/me/rules")
+def list_rules(user_id: UserId, db: DB):
+    return _d(rules.list_(db, user_id))
+
+
+@api.patch("/wards/me/rules/{rule_id}")
+def patch_rule(rule_id: uuid.UUID, body: s.RulePatch, user_id: UserId, db: DB):
+    changes = body.model_dump(exclude_unset=True, include={"enabled", "severity", "parameters"})
+    return _d(rules.patch(db, user_id, rule_id, changes, body.reason, body.version))
+
+
+@api.post("/wards/me/rule-presets/{preset_id}/apply")
+def apply_preset(preset_id: str, user_id: UserId, db: DB):
+    return _d(rules.apply_preset(db, user_id, preset_id))
+
+
+@api.get("/wards/me/holidays")
+def holidays(yearMonth: str, user_id: UserId, db: DB):  # noqa: N803
+    return _d(rules.holidays(db, user_id, parse_month(yearMonth)))
+
+
+@api.put("/wards/me/holidays/{day}")
+def put_holiday(day: date, body: s.HolidayPut, user_id: UserId, db: DB):
+    return _d(rules.put_holiday(db, user_id, day, body.is_holiday, body.name, body.reason))
+
+
+@api.get("/wards/me/off-targets/{year_month}")
+def get_off_target(year_month: str, user_id: UserId, db: DB):
+    return _d(schedules.get_off_target(db, user_id, year_month))
+
+
+@api.patch("/wards/me/off-targets/{year_month}")
+def patch_off_target(year_month: str, body: s.OffTargetPatch, user_id: UserId, db: DB):
+    return _d(schedules.patch_off_target(db, user_id, year_month, body.target_count, body.reason))
 
 
 # --- 근무표 (SCH)

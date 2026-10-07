@@ -158,6 +158,32 @@ def cancel_confirmation(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID,
     return view(db, s, m)
 
 
+# --- 월 OFF 목표 (RULE-03)
+def get_off_target(db: Session, user_id: uuid.UUID, ym: str) -> dict:
+    m = members.require_head(db, user_id)
+    s = by_month(db, m.ward_id, parse_month(ym))
+    if s is None:
+        raise not_found("TARGET_NOT_FOUND")
+    return _off_target_view(db, s)
+
+
+def patch_off_target(db: Session, user_id: uuid.UUID, ym: str, target: int | None, reason: str | None) -> dict:
+    """targetCount=null이면 자동 계산(공휴일 수 + 1)으로 돌아간다"""
+    m = members.require_head(db, user_id)
+    s = by_month(db, m.ward_id, parse_month(ym))
+    if s is None:
+        raise not_found("TARGET_NOT_FOUND")
+    if s.status in VISIBLE_TO_NURSES:
+        raise conflict("SCHEDULE_CONFIRMED", "확정된 근무표의 OFF 목표는 바꿀 수 없습니다")
+    if target is not None and not 0 <= target <= 31:
+        raise bad_request("INVALID_TARGET", "OFF 목표는 0~31", "targetCount")
+    before = s.off_target
+    s.off_target, s.off_target_reason = target, reason
+    db.flush()
+    audit.log(db, m.ward_id, user_id, "OFF_TARGET_CHANGED", "SCHEDULE", s.id, before, target)
+    return _off_target_view(db, s)
+
+
 # --- 편집 잠금 (SCH-11)
 def acquire_lock(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
     m = members.require_head(db, user_id)
@@ -229,6 +255,19 @@ def check(db: Session, s: Schedule, r: Roster | None = None) -> list[dict]:
 def violation_json(v: Violation, vid: uuid.UUID, rule_ids: dict) -> dict:
     return {"id": vid, "severity": v.severity, "ruleId": rule_ids.get(v.rule_id), "ruleCode": v.rule_id,
             "nurseId": v.nurse_id, "date": iso(v.date), "currentValue": v.current, "message": v.message}
+
+
+def violation_summary(db: Session, ward_id: uuid.UUID) -> list[dict]:
+    """규칙 변경 영향: 초안·확정 근무표별 위반 건수"""
+    out = []
+    for s in db.scalars(select(Schedule).where(Schedule.ward_id == ward_id,
+                                               Schedule.status.in_([ScheduleStatus.DRAFT, ScheduleStatus.CONFIRMED]))
+                        .order_by(Schedule.year_month)):
+        vs = check(db, s)
+        hard = sum(1 for v in vs if v["severity"] == Severity.HARD)
+        out.append({"scheduleId": s.id, "yearMonth": s.year_month, "status": s.status, "hardCount": hard,
+                    "softCount": len(vs) - hard})
+    return out
 
 
 def violations_for(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID) -> list[dict]:
@@ -361,6 +400,13 @@ def _readiness(db: Session, s: Schedule, r: Roster) -> dict:
     hard = sum(1 for v in vs if v["severity"] == Severity.HARD)
     return {"hardViolations": hard, "softViolations": len(vs) - hard,
             "confirmable": s.status == ScheduleStatus.DRAFT and hard == 0}
+
+
+def _off_target_view(db: Session, s: Schedule) -> dict:
+    holidays = len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month)))
+    return {"yearMonth": s.year_month, "targetCount": _off_target(db, s), "autoCount": holidays + 1,
+            "holidayCount": holidays, "source": "AUTO" if s.off_target is None else "MANUAL",
+            "reason": s.off_target_reason}
 
 
 def _off_target(db: Session, s: Schedule) -> int:
