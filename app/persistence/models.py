@@ -5,7 +5,7 @@ from typing import Annotated
 from sqlalchemy import JSON, Enum, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.domain.model import (AccountStatus, Duty, DutyRole, NotificationType, NurseInfo,
+from app.domain.model import (AccountStatus, Duty, DutyRole, GenerationStatus, NotificationType, NurseInfo,
                               NurseStatus, RequestStatus, Role, ScheduleStatus, Severity)
 from app.persistence.db import Base, now
 
@@ -154,6 +154,27 @@ class Assignment(Base):
     nurse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("nurses.id"))
     date: Mapped[date]
     duty: Mapped[Duty] = mapped_column(_enum(Duty))
+
+
+class GenerationJob(Base):
+    """GEN-01·02·04"""
+    __tablename__ = "generation_jobs"
+    id: Mapped[PK]
+    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), index=True)
+    schedule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("schedules.id"), index=True)
+    status: Mapped[GenerationStatus] = mapped_column(_enum(GenerationStatus))
+    stage: Mapped[str] = mapped_column(String(20))
+    started_at: Mapped[datetime] = mapped_column(default=now)
+    finished_at: Mapped[datetime | None]
+    max_seconds: Mapped[int]
+    fixed_cells: Mapped[list] = mapped_column(JSON, default=list)  # [[nurseId, date], ...]
+    base_version: Mapped[int]  # 생성 시작 시점의 근무표 버전
+    hard_violation_count: Mapped[int] = mapped_column(default=0)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    conflicts: Mapped[list] = mapped_column(JSON, default=list)
+    relaxations: Mapped[list] = mapped_column(JSON, default=list)
+    partial_cells: Mapped[list | None] = mapped_column(JSON)  # [[nurseId, date, duty], ...]
+    created_by: Mapped[uuid.UUID]
 
 
 class AuditLog(Base):
