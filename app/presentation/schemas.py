@@ -7,7 +7,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity
+from app.domain.model import Duty, DutyRole, NurseStatus, Preset, RequestType, Severity
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -156,3 +156,11 @@ class Relaxations(Body):
 
 class BaseVersion(Body):
     base_version: int
+
+
+class WorkRequestCreate(Body):
+    type: RequestType
+    target_dates: list[date] = Field(min_length=1)
+    reason_code: str
+    reason_detail: str | None = Field(None, max_length=500)
+    preferred_duty: Duty | None = None

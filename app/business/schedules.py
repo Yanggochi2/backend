@@ -12,10 +12,10 @@ from app.business.common import (ApiException, bad_request, conflict, iso, month
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
 from app.domain import validator
-from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, Roster,
+from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Roster,
                               ScheduleStatus, Severity, Violation)
 from app.persistence.db import now
-from app.persistence.models import Assignment, Nurse, Schedule, User
+from app.persistence.models import Assignment, Nurse, Schedule, User, WorkRequest
 
 # SCH-11 무활동 자동 해제 (🔶 권장값)
 LOCK_TTL = timedelta(minutes=30)
@@ -23,7 +23,7 @@ VISIBLE_TO_NURSES = (ScheduleStatus.CONFIRMED, ScheduleStatus.ARCHIVED)
 
 
 def create(db: Session, user_id: uuid.UUID, ym: str) -> dict:
-    """SCH-01"""
+    """SCH-01. 승인된 연차는 AL로 미리 채운다"""
     m = members.require_head(db, user_id)
     first = parse_month(ym)
     if by_month(db, m.ward_id, first):
@@ -34,6 +34,12 @@ def create(db: Session, user_id: uuid.UUID, ym: str) -> dict:
     r = roster(db, s)
     if not any(n.status != NurseStatus.RETIRED for n in r.nurses):
         raise unprocessable("NO_ACTIVE_NURSES", "해당 월에 소속된 간호사가 없습니다")
+    row_ids = {n.id for n in r.nurses}
+    for q in approved(db, m.ward_id, first, RequestType.ANNUAL_LEAVE):
+        for d in q.dates():
+            if q.nurse_id in row_ids:
+                db.add(Assignment(schedule_id=s.id, nurse_id=q.nurse_id, date=d, duty=Duty.AL))
+    db.flush()
     audit.log(db, m.ward_id, user_id, "SCHEDULE_CREATED", "SCHEDULE", s.id, None, s.year_month)
     return view(db, s, m)
 
@@ -119,13 +125,16 @@ def violations(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, severity
 
 
 def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledged: set[uuid.UUID]) -> dict:
-    """SCH-07. 하드 위반 0 · 모든 소프트 위반 확인(acknowledged)이어야 확정"""
+    """SCH-07. 대기 신청 0 · 하드 위반 0 · 모든 소프트 위반 확인(acknowledged)이어야 확정"""
     m = members.require_head(db, user_id)
     s = find(db, m, schedule_id)
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 확정할 수 있습니다. 현재: {s.status}")
     if _lock_active(s) and s.locked_by != user_id:
         raise ApiException(423, "SCHEDULE_LOCKED", "다른 수간호사가 편집 중입니다", lock_view(db, s))
+    pending = pending_requests(db, s)
+    if pending:
+        raise conflict("PENDING_REQUESTS_EXIST", f"처리하지 않은 신청 {len(pending)}건이 있습니다", pending)
     vs = check(db, s)
     hard = [v for v in vs if v["severity"] == Severity.HARD]
     if hard:
@@ -289,6 +298,35 @@ def violations_for(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID) -> list
     return out
 
 
+def sync_leave(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, dates: list[date], add: bool) -> dict | None:
+    """연차 승인·취소 시 DRAFT 근무표에 AL 반영. 반영 결과(scheduleImpact)를 돌려준다"""
+    s = by_month(db, ward_id, dates[0].replace(day=1))
+    if s is None or s.status != ScheduleStatus.DRAFT:
+        return None
+    existing = {a.date: a for a in _assignments(db, s.id) if a.nurse_id == nurse_id}
+    changed = []
+    for d in dates:
+        a = existing.get(d)
+        if add and (a is None or a.duty != Duty.AL):
+            changed.append({"date": d.isoformat(), "before": a.duty if a else None, "after": Duty.AL})
+            if a:
+                a.duty = Duty.AL
+            else:
+                db.add(Assignment(schedule_id=s.id, nurse_id=nurse_id, date=d, duty=Duty.AL))
+        elif not add and a and a.duty == Duty.AL:
+            changed.append({"date": d.isoformat(), "before": Duty.AL, "after": None})
+            db.delete(a)
+    if changed:
+        touch(db, s)
+    return {"scheduleId": s.id, "yearMonth": s.year_month, "version": s.version, "changedCells": changed}
+
+
+def is_confirmed(db: Session, ward_id: uuid.UUID, d: date) -> bool:
+    """확정·보관된 월인지"""
+    s = by_month(db, ward_id, d.replace(day=1))
+    return s is not None and s.status in VISIBLE_TO_NURSES
+
+
 def roster(db: Session, s: Schedule) -> Roster:
     """SCH-08: 당시 소속 인원 기준. 퇴사자도 소속 기간이 겹치면 행으로 남는다"""
     first = parse_month(s.year_month)
@@ -296,10 +334,17 @@ def roster(db: Session, s: Schedule) -> Roster:
     nurses = sorted((n for n in db.scalars(select(Nurse).where(Nurse.ward_id == s.ward_id))
                      if n.affiliation_start <= last and (n.affiliation_end is None or n.affiliation_end >= first)),
                     key=lambda n: (n.name, str(n.id)))
+    wish_offs: dict = {}
+    for q in approved(db, s.ward_id, first, RequestType.PREFERRED_OFF):
+        wish_offs.setdefault(q.nurse_id, set()).update(q.dates())
+    wish_duties: Cells = {}
+    for q in approved(db, s.ward_id, first, RequestType.PREFERRED_SHIFT):
+        for d in q.dates():
+            wish_duties.setdefault(q.nurse_id, {})[d] = q.preferred_duty
     # 연속 야간·근무를 월 경계 너머로 세기 위해 이전 달 근무표를 함께 넘긴다
     prev = by_month(db, s.ward_id, (first - timedelta(days=1)).replace(day=1))
     return Roster(first, [n.info() for n in nurses], _cells(db, s.id), rules.load(db, s.ward_id),
-                  _off_target(db, s), before=_cells(db, prev.id) if prev else {})
+                  _off_target(db, s), wish_offs, wish_duties, _cells(db, prev.id) if prev else {})
 
 
 def view(db: Session, s: Schedule, m: Member) -> dict:
@@ -355,6 +400,18 @@ def touch(db: Session, s: Schedule) -> None:
     set_committed_value(s, "version", s.version + 1)
 
 
+def pending_requests(db: Session, s: Schedule) -> list[uuid.UUID]:
+    return list(db.scalars(select(WorkRequest.id).where(
+        WorkRequest.ward_id == s.ward_id, WorkRequest.status == RequestStatus.PENDING,
+        WorkRequest.year_month == s.year_month).order_by(WorkRequest.created_at)))
+
+
+def approved(db: Session, ward_id: uuid.UUID, first: date, type_: RequestType) -> list[WorkRequest]:
+    return list(db.scalars(select(WorkRequest).where(
+        WorkRequest.ward_id == ward_id, WorkRequest.status == RequestStatus.APPROVED, WorkRequest.type == type_,
+        WorkRequest.year_month == first.strftime("%Y-%m"))))
+
+
 def _visible(s: Schedule | None, m: Member) -> Schedule:
     if s is None or (not m.is_head and s.status not in VISIBLE_TO_NURSES):
         raise not_found("SCHEDULE_NOT_FOUND")
@@ -405,11 +462,12 @@ def _confirmation(db: Session, s: Schedule) -> dict | None:
 
 
 def _readiness(db: Session, s: Schedule, r: Roster) -> dict:
-    """확정 버튼 활성 판단용. confirmable = 초안 + 하드 위반 0 (소프트 위반은 확인 후 확정)"""
+    """확정 버튼 활성 판단용. confirmable = 초안 + 하드 위반 0 + 대기 신청 0 (소프트 위반은 확인 후 확정)"""
     vs = check(db, s, r)
     hard = sum(1 for v in vs if v["severity"] == Severity.HARD)
-    return {"hardViolations": hard, "softViolations": len(vs) - hard,
-            "confirmable": s.status == ScheduleStatus.DRAFT and hard == 0}
+    pending = len(pending_requests(db, s))
+    return {"hardViolations": hard, "softViolations": len(vs) - hard, "pendingRequests": pending,
+            "confirmable": s.status == ScheduleStatus.DRAFT and hard == 0 and pending == 0}
 
 
 def _off_target_view(db: Session, s: Schedule) -> dict:
