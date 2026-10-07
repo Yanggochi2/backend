@@ -8,9 +8,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Request, Response, UploadFile
 
-from app.business import (auth, excel, generations, nurses, requests, rules, schedules, wards)
+from app.business import (auth, excel, generations, notifications, nurses, requests, rules, schedules, wards)
 from app.business.common import ApiException, parse_month
-from app.domain.model import DutyRole, NurseStatus, RequestStatus, RequestType, Role, Severity
+from app.domain.model import DutyRole, NotificationType, NurseStatus, RequestStatus, RequestType, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
@@ -329,3 +329,26 @@ def reject_request(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reaso
 @api.post("/wards/me/requests/{request_id}/cancel")
 def cancel_request(request_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(requests.cancel(db, user_id, request_id))
+
+
+# --- 알림 (NOTI). 본인 것만
+@api.get("/me/notifications")
+def my_notifications(user_id: UserId, db: DB, p: Page, unreadOnly: bool = False,  # noqa: N803
+                     type: NotificationType | None = None):  # noqa: A002
+    return notifications.list_(db, user_id, unreadOnly, type, p.page, p.size)
+
+
+@api.patch("/me/notifications/{notification_id}")
+def patch_notification(notification_id: uuid.UUID, body: s.NotificationPatch, user_id: UserId, db: DB):
+    return _d(notifications.mark(db, user_id, notification_id, body.read))
+
+
+@api.get("/me/notification-settings")
+def notification_settings(user_id: UserId, db: DB):
+    return _d(notifications.settings(db, user_id))
+
+
+@api.patch("/me/notification-settings")
+def patch_notification_settings(body: s.NotificationSettingsPatch, user_id: UserId, db: DB):
+    changes = {k: v for k, v in body.model_dump(by_alias=True, exclude_unset=True).items() if v is not None}
+    return _d(notifications.update_settings(db, user_id, changes))
