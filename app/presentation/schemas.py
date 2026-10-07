@@ -134,3 +134,25 @@ class CellBulkPatch(Body):
 
 class Confirm(Body):
     acknowledged_soft_violation_ids: list[uuid.UUID] = []
+
+
+class CellRef(Body):
+    nurse_id: uuid.UUID
+    date: date
+
+
+class GenerationStart(Body):
+    fixed_cells: list[CellRef] = []
+    max_seconds: int | None = None
+
+
+class Stop(Body):
+    apply_best_result: bool = False
+
+
+class Relaxations(Body):
+    relaxation_ids: list[str] = Field(min_length=1)
+
+
+class BaseVersion(Body):
+    base_version: int

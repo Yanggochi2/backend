@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Request, Response
 
-from app.business import (auth, nurses, rules, schedules, wards)
+from app.business import (auth, generations, nurses, rules, schedules, wards)
 from app.business.common import parse_month
 from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role, Severity
 from app.presentation import schemas as s
@@ -227,3 +227,32 @@ def release_lock(schedule_id: uuid.UUID, user_id: UserId, db: DB, lock: LockToke
 @api.post("/wards/me/schedules/{schedule_id}/lock/takeover")
 def take_over_lock(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
     return _d(schedules.take_over_lock(db, user_id, schedule_id, body.reason if body else None))
+
+
+# --- 자동 생성 (GEN)
+@api.post("/wards/me/schedules/{schedule_id}/generations", status_code=202)
+def start_generation(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.GenerationStart | None = None,
+                     lock: LockToken = None):
+    body = body or s.GenerationStart()
+    fixed = [(c.nurse_id, c.date) for c in body.fixed_cells]
+    return _d(generations.start(db, user_id, schedule_id, fixed, body.max_seconds, lock))
+
+
+@api.get("/wards/me/generations/{job_id}")
+def get_generation(job_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(generations.get(db, user_id, job_id))
+
+
+@api.post("/wards/me/generations/{job_id}/stop")
+def stop_generation(job_id: uuid.UUID, user_id: UserId, db: DB, body: s.Stop | None = None):  # noqa: ARG001
+    return _d(generations.stop(db, user_id, job_id))
+
+
+@api.post("/wards/me/generations/{job_id}/relaxations", status_code=202)
+def relax_generation(job_id: uuid.UUID, body: s.Relaxations, user_id: UserId, db: DB, lock: LockToken = None):
+    return _d(generations.relax(db, user_id, job_id, body.relaxation_ids, lock))
+
+
+@api.post("/wards/me/generations/{job_id}/partial-result/apply")
+def apply_partial(job_id: uuid.UUID, body: s.BaseVersion, user_id: UserId, db: DB, lock: LockToken = None):
+    return _d(generations.apply_partial(db, user_id, job_id, body.base_version, lock))

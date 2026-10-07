@@ -92,6 +92,22 @@ def patch(db: Session, user_id: uuid.UUID, rule_id: uuid.UUID, changes: dict, re
     return {"rule": view(r), "violationSummary": schedules.violation_summary(db, m.ward_id)}
 
 
+def soften(db: Session, m: members.Member, code: str, reason: str) -> None:
+    """GEN-04 완화안: HARD 규칙을 SOFT로 낮춘다"""
+    r = rows(db, m.ward_id)[code]
+    if CATALOG[code].locked or not r.enabled or r.severity != HARD:
+        raise ApiException(422, "RELAXATION_NOT_ALLOWED", f"'{CATALOG[code].name}' 규칙은 완화할 수 없습니다")
+    before = view(r)
+    r.severity = SOFT
+    db.flush()
+    audit.log(db, m.ward_id, m.user_id, "RULE_CHANGED", "RULE", code, before, {**view(r), "reason": reason})
+
+
+def relaxable(db: Session, ward_id: uuid.UUID, code: str) -> bool:
+    r = rows(db, ward_id).get(code)
+    return r is not None and not CATALOG[code].locked and r.enabled and r.severity == HARD
+
+
 def apply_preset(db: Session, user_id: uuid.UUID, preset_id: str) -> list[dict]:
     """RULE-04. 필요 인원(COVERAGE 값)은 유지한다"""
     m = members.require_head(db, user_id)
