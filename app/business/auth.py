@@ -7,7 +7,7 @@ import bcrypt
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.business import audit
+from app.business import audit, members, wards
 from app.business.common import ApiException, RateLimiter, conflict, sha256
 from app.domain.model import AccountStatus
 from app.persistence.db import now
@@ -40,7 +40,7 @@ def login(db: Session, email: str, password: str) -> tuple[dict, dict]:
     if u.status == AccountStatus.DISABLED:
         raise ApiException(423, "ACCOUNT_DISABLED", "비활성화된 계정입니다")
     _login_failures.reset(email)
-    audit.log(db, None, u.id, "LOGIN", "USER", u.id)
+    audit.log(db, _ward_of(db, u.id), u.id, "LOGIN", "USER", u.id)
     return summary(u), _issue(db, u.id)
 
 
@@ -65,12 +65,16 @@ def authenticate(db: Session, access_token: str | None) -> uuid.UUID:
 
 def logout(db: Session, user_id: uuid.UUID, access_token: str | None) -> None:
     db.execute(delete(SessionToken).where(SessionToken.access_hash == sha256(access_token or "")))
-    audit.log(db, None, user_id, "LOGOUT", "USER", user_id)
+    audit.log(db, _ward_of(db, user_id), user_id, "LOGOUT", "USER", user_id)
 
 
 def me(db: Session, user_id: uuid.UUID) -> dict:
-    """MeResponse. 병동 소속 기능 전까지 membership·ward는 항상 null"""
-    return {"user": summary(db.get(User, user_id)), "membership": None, "ward": None, "membershipRequest": None}
+    """MeResponse. membershipRequest는 소속 전 승인 대기 화면용 (가장 최근 가입 신청)"""
+    u = db.get(User, user_id)
+    n = members.membership(db, user_id)
+    return {"user": summary(u), "membership": members.view(n) if n else None,
+            "ward": wards.view(db, n.ward_id) if n else None,
+            "membershipRequest": None if n else wards.latest_request(db, user_id)}
 
 
 def summary(u: User) -> dict:
@@ -82,3 +86,8 @@ def _issue(db: Session, user_id: uuid.UUID) -> dict:
     db.add(SessionToken(access_hash=sha256(tokens["access"]), refresh_hash=sha256(tokens["refresh"]), user_id=user_id,
                         access_expires_at=now() + ACCESS_TTL, refresh_expires_at=now() + REFRESH_TTL))
     return tokens
+
+
+def _ward_of(db: Session, user_id: uuid.UUID) -> uuid.UUID | None:
+    n = members.membership(db, user_id)
+    return n.ward_id if n else None

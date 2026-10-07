@@ -1,10 +1,12 @@
 """요청 본문 검증. JSON 필드는 camelCase, 파이썬 속성은 snake_case"""
 import re
+import uuid
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
+from app.domain.model import Preset
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -39,3 +41,26 @@ class Signup(Body):
 class Login(Body):
     email: NonBlank
     password: NonBlank
+
+
+class CreateWard(Body):
+    hospital_name: NonBlank
+    ward_name: NonBlank
+    required_staff: dict[str, int]
+    rule_preset: Preset
+
+
+class JoinRequest(Body):
+    join_code: str
+
+
+class ApproveMembership(Body):
+    nurse_id: uuid.UUID | None = None  # 계정을 연결할 기존 간호사 (선택)
+
+
+class Reason(Body):
+    reason: str | None = None
+
+
+class Transfer(Body):
+    target_nurse_id: uuid.UUID
