@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Enum, ForeignKey, Index, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.model import (AccountStatus, Duty, DutyRole, GenerationStatus, NotificationType, NurseInfo,
-                              NurseStatus, RequestStatus, Role, ScheduleStatus, Severity)
+                              NurseStatus, RequestStatus, RequestType, Role, ScheduleStatus, Severity)
 from app.persistence.db import Base, now
 
 # 모든 식별자는 UUID. 순번 id로 다른 병동 리소스를 추측하지 못하게 한다
@@ -154,6 +154,30 @@ class Assignment(Base):
     nurse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("nurses.id"))
     date: Mapped[date]
     duty: Mapped[Duty] = mapped_column(_enum(Duty))
+
+
+class WorkRequest(Base):
+    """REQ. 연차·희망오프·희망근무 통합 신청. 대상 날짜는 같은 달 안에서 여러 개"""
+    __tablename__ = "work_requests"
+    id: Mapped[PK]
+    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), index=True)
+    nurse_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("nurses.id"), index=True)
+    type: Mapped[RequestType] = mapped_column(_enum(RequestType))
+    year_month: Mapped[str] = mapped_column(String(7))
+    target_dates: Mapped[list] = mapped_column(JSON)  # yyyy-MM-dd 문자열, 정렬됨
+    reason_code: Mapped[str] = mapped_column(String(20))
+    reason_detail: Mapped[str | None] = mapped_column(String(500))
+    preferred_duty: Mapped[Duty | None] = mapped_column(_enum(Duty))
+    status: Mapped[RequestStatus] = mapped_column(_enum(RequestStatus), default=RequestStatus.PENDING)
+    processed_by: Mapped[uuid.UUID | None]
+    processed_at: Mapped[datetime | None]
+    rejection_reason: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(default=now)
+    version: Mapped[int] = mapped_column(default=0)
+    __mapper_args__ = {"version_id_col": version}
+
+    def dates(self) -> list[date]:
+        return [date.fromisoformat(d) for d in self.target_dates]
 
 
 class GenerationJob(Base):
