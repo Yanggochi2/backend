@@ -201,6 +201,21 @@ class GenerationJob(Base):
     created_by: Mapped[uuid.UUID]
 
 
+class ImportPreview(Base):
+    """SCH-10 엑셀 가져오기 미리보기. 매핑을 확정한 뒤 반영한다"""
+    __tablename__ = "import_previews"
+    id: Mapped[PK]
+    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"))
+    schedule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("schedules.id"), index=True)
+    rows: Mapped[list] = mapped_column(JSON)
+    cells: Mapped[list] = mapped_column(JSON)
+    nurse_mappings: Mapped[dict] = mapped_column(JSON)  # rowNumber(str) → nurseId 문자열 또는 None(건너뜀)
+    duty_mappings: Mapped[dict] = mapped_column(JSON)  # 엑셀 코드 → dutyCode 또는 None(미배정)
+    applied_at: Mapped[datetime | None]
+    created_by: Mapped[uuid.UUID]
+    created_at: Mapped[datetime] = mapped_column(default=now)
+
+
 class AuditLog(Base):
     """SEC-03. 조회 전용. 수정·삭제 경로 없음"""
     __tablename__ = "audit_logs"
