@@ -57,3 +57,19 @@ def err(r, status, code) -> dict:
     assert e["code"] == code and e["traceId"], e
     return e
 
+
+def ward_head(d=1, e=1, n=1, preset="STANDARD") -> Api:
+    """병동을 개설한 수간호사"""
+    h = user("수간호사")
+    h.data("POST", "/wards", {"hospitalName": "한빛", "wardName": "7병동", "requiredStaff": {"D": d, "E": e, "N": n},
+                              "rulePreset": preset}, status=201)
+    return h
+
+
+def member(h: Api, name="간호사") -> tuple[Api, str]:
+    """h의 병동에 가입 승인된 일반 간호사와 그 간호사 id"""
+    n = user(name)
+    code = h.data("GET", "/wards/me/join-code")["code"]
+    rid = n.data("POST", "/ward-membership-requests", {"joinCode": code})["id"]
+    return n, h.data("POST", f"/wards/me/membership-requests/{rid}/approve")["id"]
+

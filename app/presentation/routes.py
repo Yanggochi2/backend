@@ -2,12 +2,14 @@
 API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 항상 세션 사용자의 소속 병동이 대상이다 (1.2).
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
+import uuid
 
 from fastapi import APIRouter, Request, Response
 
-from app.business import (auth)
+from app.business import (auth, wards)
+from app.domain.model import RequestStatus
 from app.presentation import schemas as s
-from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, TxRoute, UserId, clear_auth_cookies,
+from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
@@ -46,3 +48,54 @@ def logout(user_id: UserId, db: DB, request: Request, response: Response):
 @api.get("/me")
 def me(user_id: UserId, db: DB):
     return _d(auth.me(db, user_id))
+
+
+# --- 병동·가입 (AUTH-03~07)
+@api.post("/wards", status_code=201)
+def create_ward(body: s.CreateWard, user_id: UserId, db: DB):
+    return _d(wards.create(db, user_id, body.hospital_name, body.ward_name, body.required_staff, body.rule_preset))
+
+
+@api.get("/wards/me")
+def my_ward(user_id: UserId, db: DB):
+    return _d(wards.get(db, user_id))
+
+
+@api.post("/ward-membership-requests", status_code=201)
+def request_membership(body: s.JoinRequest, user_id: UserId, db: DB):
+    return _d(wards.request_join(db, user_id, body.join_code))
+
+
+@api.get("/wards/me/membership-requests")
+def membership_requests(user_id: UserId, db: DB, p: Page, status: RequestStatus | None = None):
+    return wards.list_requests(db, user_id, status, p.page, p.size)
+
+
+@api.post("/wards/me/membership-requests/{request_id}/approve")
+def approve_membership(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.ApproveMembership | None = None):
+    return _d(wards.approve(db, user_id, request_id, body.nurse_id if body else None))
+
+
+@api.post("/wards/me/membership-requests/{request_id}/reject")
+def reject_membership(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
+    return _d(wards.reject(db, user_id, request_id, body.reason if body else None))
+
+
+@api.get("/wards/me/join-code")
+def join_code(user_id: UserId, db: DB):
+    return _d(wards.join_code(db, user_id))
+
+
+@api.post("/wards/me/join-code/rotate")
+def rotate_join_code(user_id: UserId, db: DB):
+    return _d(wards.rotate_code(db, user_id))
+
+
+@api.post("/wards/me/head-nurses/{nurse_id}/grant")
+def grant_head(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(wards.grant_head(db, user_id, nurse_id))
+
+
+@api.post("/wards/me/head-nurse-transfer")
+def transfer_head(body: s.Transfer, user_id: UserId, db: DB):
+    return _d(wards.transfer_head(db, user_id, body.target_nurse_id))
