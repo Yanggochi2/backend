@@ -158,6 +158,21 @@ class BaseVersion(Body):
     base_version: int
 
 
+class NurseMapping(Body):
+    row_number: int
+    nurse_id: uuid.UUID | None
+
+
+class DutyMapping(Body):
+    raw: str
+    duty_code: Duty | None
+
+
+class ImportMappingPatch(Body):
+    nurse_mappings: list[NurseMapping] | None = None
+    duty_mappings: list[DutyMapping] | None = None
+
+
 class WorkRequestCreate(Body):
     type: RequestType
     target_dates: list[date] = Field(min_length=1)

@@ -6,21 +6,29 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Header, Request, Response, UploadFile
 
-from app.business import (auth, generations, nurses, requests, rules, schedules, wards)
-from app.business.common import parse_month
+from app.business import (auth, excel, generations, nurses, requests, rules, schedules, wards)
+from app.business.common import ApiException, parse_month
 from app.domain.model import DutyRole, NurseStatus, RequestStatus, RequestType, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
+MAX_UPLOAD = 10 * 1024 * 1024  # 🔶 권장 10MB
 LockToken = Annotated[str | None, Header(alias="X-Schedule-Lock-Token")]
 
 
 def _d(x) -> dict:
     return {"data": x}
+
+
+def _upload(file: UploadFile) -> bytes:
+    data = file.file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise ApiException(413, "FILE_TOO_LARGE", "파일이 너무 큽니다 (최대 10MB)")
+    return data
 
 
 # --- 인증 (AUTH-01·02)
@@ -212,6 +220,31 @@ def confirm(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Confirm | N
 @api.post("/wards/me/schedules/{schedule_id}/confirmation-cancellations")
 def cancel_confirmation(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
     return _d(schedules.cancel_confirmation(db, user_id, schedule_id, body.reason if body else None))
+
+
+@api.get("/wards/me/schedules/{schedule_id}/export.xlsx")
+def export_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    data, filename = excel.export_schedule(db, user_id, schedule_id)
+    return Response(data, media_type=excel.XLSX, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@api.post("/wards/me/schedules/{schedule_id}/import-previews", status_code=202)
+def import_preview(schedule_id: uuid.UUID, file: UploadFile, user_id: UserId, db: DB):
+    return _d(excel.create_preview(db, user_id, schedule_id, _upload(file)))
+
+
+@api.patch("/wards/me/schedules/{schedule_id}/import-previews/{preview_id}")
+def patch_import_preview(schedule_id: uuid.UUID, preview_id: uuid.UUID, body: s.ImportMappingPatch, user_id: UserId,
+                         db: DB):
+    nm = [(x.row_number, x.nurse_id) for x in body.nurse_mappings or []]
+    dm = [(x.raw, x.duty_code) for x in body.duty_mappings or []]
+    return _d(excel.update_preview(db, user_id, schedule_id, preview_id, nm, dm))
+
+
+@api.post("/wards/me/schedules/{schedule_id}/import-previews/{preview_id}/apply")
+def apply_import(schedule_id: uuid.UUID, preview_id: uuid.UUID, body: s.BaseVersion, user_id: UserId, db: DB,
+                 lock: LockToken = None):
+    return _d(excel.apply_preview(db, user_id, schedule_id, preview_id, body.base_version, lock))
 
 
 @api.post("/wards/me/schedules/{schedule_id}/lock", status_code=201)
