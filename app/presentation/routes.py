@@ -66,6 +66,13 @@ def me(user_id: UserId, db: DB):
     return _d(auth.me(db, user_id))
 
 
+@api.delete("/me", status_code=204)
+def withdraw(body: s.Withdraw, user_id: UserId, db: DB, response: Response):
+    """계정 탈퇴. 비밀번호 재확인"""
+    auth.withdraw(db, user_id, body.password)
+    clear_auth_cookies(response)
+
+
 # --- 병동·가입 (AUTH-03~07)
 @api.post("/wards", status_code=201)
 def create_ward(body: s.CreateWard, user_id: UserId, db: DB):
@@ -80,6 +87,11 @@ def my_ward(user_id: UserId, db: DB):
 @api.post("/ward-membership-requests", status_code=201)
 def request_membership(body: s.JoinRequest, user_id: UserId, db: DB):
     return _d(wards.request_join(db, user_id, body.join_code))
+
+
+@api.post("/wards/me/membership/leave", status_code=204)
+def leave_ward(user_id: UserId, db: DB):
+    wards.leave(db, user_id)
 
 
 @api.get("/wards/me/membership-requests")

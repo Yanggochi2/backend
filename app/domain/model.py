@@ -65,6 +65,7 @@ class RequestStatus(StrEnum):
 class AccountStatus(StrEnum):
     ACTIVE = "ACTIVE"
     DISABLED = "DISABLED"
+    WITHDRAWN = "WITHDRAWN"  # 계정 탈퇴. 개인정보는 지우고 행만 남김
 
 
 class GenerationStatus(StrEnum):
@@ -90,6 +91,7 @@ class NotificationType(StrEnum):
     MEMBERSHIP_REJECTED = "MEMBERSHIP_REJECTED"
     DUTY_REMINDER = "DUTY_REMINDER"
     LOCK_TAKEN_OVER = "LOCK_TAKEN_OVER"
+    MEMBER_LEFT = "MEMBER_LEFT"
 
 
 class Preset(StrEnum):

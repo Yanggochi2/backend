@@ -6,7 +6,7 @@ from datetime import timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.business import audit, members, notifications, rules
+from app.business import audit, members, notifications, requests, rules, schedules
 from app.business.common import (RateLimiter, conflict, iso, not_found, page, require_reason, today_kst,
                                  unprocessable)
 from app.domain.model import NotificationType, NurseStatus, Preset, RequestStatus, Role
@@ -84,9 +84,7 @@ def _join_by_invite(db: Session, user_id: uuid.UUID, code: str) -> dict:
     if n.invite_expires_at < now():
         raise unprocessable("INVITE_CODE_EXPIRED", "만료된 초대 코드입니다. 수간호사에게 재발급을 요청하세요")
     # 다른 병동에 걸어 둔 가입 신청은 의미가 없어지므로 취소한다 (나중에 승인되면 두 병동 소속이 됨)
-    for p in db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id,
-                                                        MembershipRequest.status == RequestStatus.PENDING)):
-        p.status, p.processed_at = RequestStatus.CANCELLED, now()
+    cancel_pending(db, user_id)
     n.user_id, n.invite_code, n.invite_expires_at = user_id, None, None
     j = MembershipRequest(ward_id=n.ward_id, user_id=user_id, status=RequestStatus.APPROVED, via="INVITE_CODE",
                           processed_at=now())
@@ -208,6 +206,39 @@ def transfer_head(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> dict:
     target.role, me.role = Role.HEAD_NURSE, Role.NURSE
     audit.log(db, m.ward_id, user_id, "HEAD_NURSE_TRANSFERRED", "NURSE", nurse_id, f"nurse:{me.id}", f"nurse:{nurse_id}")
     return {"from": members.view(me), "to": members.view(target)}
+
+
+def leave(db: Session, user_id: uuid.UUID, why: str = "병동 탈퇴") -> None:
+    """
+    병동 탈퇴. 간호사 행은 지우지 않고 퇴사 처리 + 계정 연결 해제 (지난 근무표·신청·감사 로그 보존).
+    종료일 이후의 초안 셀·신청은 자동 정리하고, 확정본은 바꾸지 않고 수간호사에게 알린다
+    """
+    m = members.require(db, user_id)
+    if m.is_head and count_heads(db, m.ward_id) <= 1:
+        raise conflict("LAST_HEAD_NURSE", "마지막 수간호사는 권한을 이관한 뒤 탈퇴할 수 있습니다")
+    n = db.get(Nurse, m.nurse_id)
+    end = max(today_kst(), n.affiliation_start)
+    n.status, n.affiliation_end, n.user_id, n.role = NurseStatus.RETIRED, end, None, Role.NURSE
+    n.invite_code = n.invite_expires_at = None
+    db.flush()
+    cancelled = requests.withdraw_all(db, m.ward_id, n.id, end)
+    cleared, confirmed = schedules.clear_after(db, m.ward_id, n.id, end)
+    audit.log(db, m.ward_id, user_id, "MEMBER_LEFT", "NURSE", n.id, None,
+              f"{why} cancelledRequests={cancelled} cleared={cleared} confirmed={confirmed}")
+    body = f"{n.name}님이 {why}했습니다."
+    if cleared:
+        body += f" 초안 근무표({', '.join(cleared)})에서 근무를 지웠습니다."
+    if confirmed:
+        body += f" 확정된 근무표({', '.join(confirmed)})는 확정 취소 후 수정이 필요합니다."
+    for h in db.scalars(select(Nurse).where(Nurse.ward_id == m.ward_id, Nurse.role == Role.HEAD_NURSE,
+                                            Nurse.status != NurseStatus.RETIRED)):
+        notifications.notify_user(db, h.user_id, NotificationType.MEMBER_LEFT, "간호사 탈퇴", body, "NURSE", n.id)
+
+
+def cancel_pending(db: Session, user_id: uuid.UUID) -> None:
+    for j in db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id,
+                                                        MembershipRequest.status == RequestStatus.PENDING)):
+        j.status, j.processed_at = RequestStatus.CANCELLED, now()
 
 
 def count_heads(db: Session, ward_id: uuid.UUID) -> int:
