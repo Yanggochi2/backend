@@ -90,6 +90,7 @@ def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> d
     if end < n.affiliation_start:
         raise unprocessable("INVALID_END_DATE", "소속 종료일이 시작일보다 빠릅니다")
     n.status, n.affiliation_end = NurseStatus.RETIRED, end
+    n.invite_code = n.invite_expires_at = None
     db.flush()
     audit.log(db, m.ward_id, user_id, "NURSE_RETIRED", "NURSE", n.id, None, end)
     return _result(db, m, n)
@@ -100,10 +101,11 @@ def view(n: Nurse, full: bool) -> dict:
     v = {"id": n.id, "name": n.name, "role": n.role, "dutyRole": n.duty_role,
          "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
          "status": None, "joinedAt": None, "careerMonths": None, "skillLevel": None, "preceptorOf": None,
-         "hasAccount": None, "version": n.version}
+         "hasAccount": None, "inviteExpiresAt": None, "version": n.version}
     if full:
         v.update(status=n.status, joinedAt=iso(n.joined_at), careerMonths=n.career_months, skillLevel=n.skill_level,
-                 preceptorOf=sorted(n.preceptor_of or []), hasAccount=n.user_id is not None)
+                 preceptorOf=sorted(n.preceptor_of or []), hasAccount=n.user_id is not None,
+                 inviteExpiresAt=iso(n.invite_expires_at) if n.invite_code else None)
     return v
 
 

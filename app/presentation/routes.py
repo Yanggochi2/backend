@@ -123,6 +123,11 @@ def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
     return _d(nurses.create(db, user_id, body.model_dump()))
 
 
+@api.post("/wards/me/nurses/{nurse_id}/invite-code", status_code=201)
+def issue_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(wards.issue_invite(db, user_id, nurse_id))
+
+
 @api.get("/wards/me/nurses")
 def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, role: Role | None = None,
                 dutyRole: DutyRole | None = None, status: NurseStatus | None = None,  # noqa: N803
