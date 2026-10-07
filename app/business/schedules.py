@@ -1,4 +1,5 @@
 """SCH-01~11, RULE-03"""
+import secrets
 import uuid
 from datetime import date, timedelta
 
@@ -7,8 +8,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import set_committed_value
 
 from app.business import audit, members, notifications, rules
-from app.business.common import (bad_request, conflict, iso, month_end, not_found, page, parse_month,
-                                 require_reason, unprocessable)
+from app.business.common import (ApiException, bad_request, conflict, iso, month_end, not_found, page, parse_month,
+                                 require_reason, sha256, unprocessable)
 from app.business.members import Member
 from app.domain import validator
 from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, Roster,
@@ -16,6 +17,8 @@ from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, Roster
 from app.persistence.db import now
 from app.persistence.models import Assignment, Nurse, Schedule, User
 
+# SCH-11 무활동 자동 해제 (🔶 권장값)
+LOCK_TTL = timedelta(minutes=30)
 VISIBLE_TO_NURSES = (ScheduleStatus.CONFIRMED, ScheduleStatus.ARCHIVED)
 
 
@@ -52,11 +55,11 @@ def coverage(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> list[di
 
 
 def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_version: int,
-               changes: list[tuple[uuid.UUID, date, Duty | None]]) -> dict:
+               changes: list[tuple[uuid.UUID, date, Duty | None]], lock_token: str | None) -> dict:
     """SCH-02·03. 전체 성공 또는 전체 실패 (요청 트랜잭션)"""
     m = members.require_head(db, user_id)
     s = find(db, m, schedule_id)
-    editable(db, s, m, base_version)
+    editable(db, s, m, lock_token, base_version)
     changed = apply_changes(db, s, changes)
     audit.log(db, m.ward_id, user_id, "SCHEDULE_CELLS_CHANGED", "SCHEDULE", s.id, None, f"{changed} cells")
     r = roster(db, s)
@@ -111,6 +114,8 @@ def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledge
     s = find(db, m, schedule_id)
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 확정할 수 있습니다. 현재: {s.status}")
+    if _lock_active(s) and s.locked_by != user_id:
+        raise ApiException(423, "SCHEDULE_LOCKED", "다른 수간호사가 편집 중입니다", lock_view(db, s))
     vs = check(db, s)
     hard = [v for v in vs if v["severity"] == Severity.HARD]
     if hard:
@@ -120,6 +125,7 @@ def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledge
         raise conflict("SOFT_VIOLATIONS_UNACKNOWLEDGED", f"확인하지 않은 소프트 위반 {len(missing)}건이 있습니다", missing)
     s.status, s.confirmed_at, s.confirmed_by = ScheduleStatus.CONFIRMED, now(), user_id
     s.confirm_count += 1
+    _unlock(s)
     touch(db, s)
     for o in db.scalars(select(Schedule).where(Schedule.ward_id == m.ward_id, Schedule.status == ScheduleStatus.CONFIRMED,
                                                Schedule.year_month < s.year_month)):
@@ -152,13 +158,60 @@ def cancel_confirmation(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID,
     return view(db, s, m)
 
 
-def editable(db: Session, s: Schedule, m: Member, base_version: int | None) -> None:
-    """근무표 변경 공통 전제: DRAFT, baseVersion 일치"""
+# --- 편집 잠금 (SCH-11)
+def acquire_lock(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
+    m = members.require_head(db, user_id)
+    s = _draft(db, m, schedule_id)
+    if _lock_active(s) and s.locked_by != user_id:
+        raise conflict("LOCK_ALREADY_HELD", "다른 수간호사가 편집 중입니다", lock_view(db, s))
+    return _grant_lock(db, s, user_id)
+
+
+def release_lock(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, token: str | None) -> None:
+    m = members.require_head(db, user_id)
+    s = find(db, m, schedule_id)
+    if not _lock_active(s) or s.locked_by != user_id or s.lock_token_hash != sha256(token or ""):
+        raise ApiException(403, "LOCK_TOKEN_INVALID", "잠금 토큰이 유효하지 않습니다")
+    _unlock(s)
+
+
+def take_over_lock(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, reason: str | None) -> dict:
+    """강제 인수: 기존 보유자에게 알리고 감사 로그를 남긴다"""
+    reason = require_reason(reason)
+    m = members.require_head(db, user_id)
+    s = _draft(db, m, schedule_id)
+    previous = s.locked_by if _lock_active(s) else None
+    if previous and previous != user_id:
+        notifications.notify_user(db, previous, NotificationType.LOCK_TAKEN_OVER, "편집 잠금 인수",
+                                  f"{s.year_month} 근무표 편집권을 {db.get(User, user_id).name}님이 가져갔습니다. "
+                                  f"사유: {reason}", "SCHEDULE", s.id)
+    audit.log(db, m.ward_id, user_id, "SCHEDULE_LOCK_TAKEN_OVER", "SCHEDULE", s.id, f"user:{previous}",
+              f"user:{user_id} reason={reason}")
+    return _grant_lock(db, s, user_id)
+
+
+def editable(db: Session, s: Schedule, m: Member, lock_token: str | None, base_version: int | None) -> None:
+    """
+    근무표 변경 공통 전제: DRAFT, 잠금(활성 잠금이 있으면 그 토큰 필요), baseVersion 일치.
+    잠금이 없으면 baseVersion만으로 충돌을 막는다
+    """
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 편집할 수 있습니다. 현재: {s.status}")
+    if _lock_active(s):
+        if s.locked_by != m.user_id or s.lock_token_hash != sha256(lock_token or ""):
+            raise ApiException(423, "SCHEDULE_LOCKED", "다른 수간호사가 편집 중이거나 잠금 토큰이 없습니다",
+                               lock_view(db, s))
+        s.lock_activity_at = now()
     if base_version is not None and base_version != s.version:
         raise conflict("VERSION_CONFLICT", "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요",
                        {"currentVersion": s.version})
+
+
+def lock_view(db: Session, s: Schedule) -> dict | None:
+    if not _lock_active(s):
+        return None
+    return {"holderId": s.locked_by, "holderName": _user_name(db, s.locked_by), "acquiredAt": iso(s.locked_at),
+            "lastActivityAt": iso(s.lock_activity_at), "expiresAt": iso(s.lock_activity_at + LOCK_TTL)}
 
 
 # --- 다른 모듈에서 쓰는 조회·검증
@@ -201,7 +254,7 @@ def roster(db: Session, s: Schedule) -> Roster:
 
 
 def view(db: Session, s: Schedule, m: Member) -> dict:
-    """역할에 따라 필드 차등: 임신 여부(nightBlocked)·확정 가능 여부는 수간호사만, 통계는 본인만"""
+    """역할에 따라 필드 차등: 임신 여부(nightBlocked)·잠금·확정 가능 여부는 수간호사만, 통계는 본인만"""
     r = roster(db, s)
     holidays = rules.holiday_dates(db, s.ward_id, r.month)
     status = {n.id: n.status for n in r.nurses}
@@ -222,6 +275,7 @@ def view(db: Session, s: Schedule, m: Member) -> dict:
             "confirmedAt": iso(s.confirmed_at), "offTarget": r.off_target,
             "holidays": [d.isoformat() for d in sorted(holidays)],
             "confirmation": _confirmation(db, s),
+            "lock": lock_view(db, s) if m.is_head else None,
             "readiness": _readiness(db, s, r) if m.is_head else None}
 
 
@@ -255,6 +309,13 @@ def touch(db: Session, s: Schedule) -> None:
 def _visible(s: Schedule | None, m: Member) -> Schedule:
     if s is None or (not m.is_head and s.status not in VISIBLE_TO_NURSES):
         raise not_found("SCHEDULE_NOT_FOUND")
+    return s
+
+
+def _draft(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
+    s = find(db, m, schedule_id)
+    if s.status != ScheduleStatus.DRAFT:
+        raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 가능합니다. 현재: {s.status}")
     return s
 
 
@@ -307,6 +368,21 @@ def _off_target(db: Session, s: Schedule) -> int:
     if s.off_target is not None:
         return s.off_target
     return len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month))) + 1
+
+
+def _grant_lock(db: Session, s: Schedule, user_id: uuid.UUID) -> dict:
+    token = secrets.token_urlsafe(32)
+    s.locked_by, s.locked_at, s.lock_activity_at, s.lock_token_hash = user_id, now(), now(), sha256(token)
+    db.flush()
+    return {"lock": lock_view(db, s), "lockToken": token}
+
+
+def _unlock(s: Schedule) -> None:
+    s.locked_by = s.locked_at = s.lock_activity_at = s.lock_token_hash = None
+
+
+def _lock_active(s: Schedule) -> bool:
+    return s.locked_by is not None and s.lock_activity_at + LOCK_TTL > now()
 
 
 def _user_name(db: Session, user_id: uuid.UUID | None) -> str | None:
