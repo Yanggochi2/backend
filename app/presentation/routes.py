@@ -3,12 +3,12 @@ API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 항상 �
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Request, Response, UploadFile
+from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
 
-from app.business import (auth, excel, generations, notifications, nurses, requests, rules, schedules, wards)
+from app.business import (audit, auth, excel, generations, notifications, nurses, requests, rules, schedules, wards)
 from app.business.common import ApiException, parse_month
 from app.domain.model import DutyRole, NotificationType, NurseStatus, RequestStatus, RequestType, Role, Severity
 from app.presentation import schemas as s
@@ -29,6 +29,10 @@ def _upload(file: UploadFile) -> bytes:
     if len(data) > MAX_UPLOAD:
         raise ApiException(413, "FILE_TOO_LARGE", "파일이 너무 큽니다 (최대 10MB)")
     return data
+
+
+def _utc(dt: datetime | None) -> datetime | None:
+    return dt.astimezone(UTC).replace(tzinfo=None) if dt and dt.tzinfo else dt
 
 
 # --- 인증 (AUTH-01·02)
@@ -352,3 +356,11 @@ def notification_settings(user_id: UserId, db: DB):
 def patch_notification_settings(body: s.NotificationSettingsPatch, user_id: UserId, db: DB):
     changes = {k: v for k, v in body.model_dump(by_alias=True, exclude_unset=True).items() if v is not None}
     return _d(notifications.update_settings(db, user_id, changes))
+
+
+# --- 감사 로그 (SEC-03)
+@api.get("/wards/me/audit-logs")
+def audit_logs(user_id: UserId, db: DB, p: Page, frm: datetime | None = Query(None, alias="from"),
+               to: datetime | None = None, actorId: uuid.UUID | None = None,  # noqa: N803
+               actionType: str | None = None):  # noqa: N803
+    return audit.search(db, user_id, _utc(frm), _utc(to), actorId, actionType, p.page, p.size)
