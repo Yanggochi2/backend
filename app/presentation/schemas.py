@@ -7,7 +7,7 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import Duty, DutyRole, NurseStatus, Preset
+from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -96,6 +96,25 @@ class NursePatch(Body):
 
 class Retire(Body):
     affiliation_end: date
+
+
+class RulePatch(Body):
+    enabled: bool | None = None
+    severity: Severity | None = None
+    parameters: dict | None = None
+    reason: str | None = None
+    version: int | None = None
+
+
+class HolidayPut(Body):
+    is_holiday: bool
+    name: str | None = None
+    reason: str | None = None
+
+
+class OffTargetPatch(Body):
+    target_count: int | None
+    reason: str | None = None
 
 
 class ScheduleCreate(Body):
