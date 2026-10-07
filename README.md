@@ -53,9 +53,15 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 | Method | Path | 권한 | 설명 |
 |---|---|---|---|
 | POST | /wards/me/nurses/{nurseId}/invite-code | HEAD_NURSE | 계정 없이 등록한 간호사에게 개인 초대 코드(10자, 7일, 1회용) 발급. 재발급 시 이전 코드 무효. 연결된 간호사 409 `NURSE_ALREADY_LINKED` |
+| POST | /wards/me/membership/leave | 병동 구성원 | 병동 탈퇴 (204). 마지막 수간호사 409 `LAST_HEAD_NURSE` |
+| DELETE | /me | 인증 사용자 | 계정 탈퇴 (204). 본문 `{password}` 재확인, 틀리면 401. 소속이 있으면 병동 탈퇴를 먼저 수행 |
 
 - `POST /ward-membership-requests`의 `joinCode`에 **개인 초대 코드**를 넣으면 승인 없이 그 간호사 행에 계정이 연결된다 (응답 `status: APPROVED`, `via: INVITE_CODE`). 병동 공용 코드(8자)는 지금처럼 승인 대기. 만료 코드 422 `INVITE_CODE_EXPIRED`
 - 간호사 응답에 `inviteExpiresAt`(수간호사만, 발급된 코드가 있을 때)
+- **탈퇴해도 간호사 행은 지우지 않는다.** 퇴사(`RETIRED`, 소속 종료일=오늘) + 계정 연결 해제 → 목록·이후 근무표에서 빠지고 지난 근무표·감사 로그는 보존
+  - 대기 중인 신청과 종료일 이후 날짜의 승인 신청은 취소(초안의 AL도 제거), 초안 근무표의 종료일 이후 셀은 삭제(version 증가)
+  - 확정된 근무표는 바꾸지 않고 수간호사에게 `MEMBER_LEFT` 알림 (확정 취소 후 수정)
+  - 계정 탈퇴는 이메일·이름·비밀번호를 익명화하고 세션·알림을 삭제. 같은 이메일로 재가입 가능
 
 ## 🔶 결정 필요 항목에 대한 현재 구현
 | API | 선택한 동작 |
