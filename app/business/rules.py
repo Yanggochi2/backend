@@ -1,13 +1,14 @@
 """RULE-01·02·04. 규칙은 병동별 행(WardRule)으로 저장하고 검증·생성용 Rules로 변환한다"""
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.business.common import ApiException
+from app.business.common import ApiException, month_end
 from app.domain.model import Preset, Rules, Severity
-from app.persistence.models import WardRule
+from app.persistence.models import Holiday, WardRule
 
 HARD, SOFT = Severity.HARD, Severity.SOFT
 
@@ -36,6 +37,10 @@ CATALOG = {
 }
 # MINIMAL 프리셋에서 끄는 규칙
 _MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY"}
+# 매년 같은 날짜인 공휴일. 설·추석·대체공휴일 등은 병동에서 보정(RULE-02)한다
+# ponytail: 음력·대체공휴일 자동 계산 없음. 필요하면 공공데이터 특일 API 연동
+DEFAULT_HOLIDAYS = {(1, 1): "신정", (3, 1): "삼일절", (5, 5): "어린이날", (6, 6): "현충일", (8, 15): "광복절",
+                    (10, 3): "개천절", (10, 9): "한글날", (12, 25): "기독탄신일"}
 
 
 def seed(db: Session, ward_id: uuid.UUID, preset: Preset, staff: dict) -> None:
@@ -69,3 +74,20 @@ def _preset_values(preset: Preset, code: str, staff: dict) -> dict:
     d = CATALOG[code]
     return {"enabled": not (preset == Preset.MINIMAL and code in _MINIMAL_OFF), "severity": d.severity,
             "parameters": dict(staff) if code == "COVERAGE" else dict(d.params)}
+
+
+# --- 공휴일 (RULE-02)
+def in_month(db: Session, ward_id: uuid.UUID, first: date) -> list[dict]:
+    """기본 공휴일에 병동 보정을 덮어쓴 결과. isHoliday=false는 기본 공휴일을 근무일로 바꾼 보정"""
+    out = {first.replace(day=d): {"date": first.replace(day=d).isoformat(), "name": name, "isHoliday": True,
+                                  "source": "DEFAULT", "reason": None}
+           for (mo, d), name in DEFAULT_HOLIDAYS.items() if mo == first.month}
+    for h in db.scalars(select(Holiday).where(Holiday.ward_id == ward_id, Holiday.date >= first,
+                                              Holiday.date <= month_end(first))):
+        out[h.date] = {"date": h.date.isoformat(), "name": h.name, "isHoliday": h.is_holiday, "source": "WARD",
+                       "reason": h.reason}
+    return [out[d] for d in sorted(out)]
+
+
+def holiday_dates(db: Session, ward_id: uuid.UUID, first: date) -> set[date]:
+    return {date.fromisoformat(h["date"]) for h in in_month(db, ward_id, first) if h["isHoliday"]}
