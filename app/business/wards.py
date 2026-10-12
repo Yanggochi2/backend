@@ -1,4 +1,8 @@
-"""AUTH-03·04·05·06·07"""
+"""
+AUTH-03·04·05·06·07. 가입 경로는 두 가지다 (전체 흐름: docs/membership.md)
+- 병동 공용 코드(8자): 누구나 신청 가능 → PENDING → 수간호사가 승인·반려
+- 개인 초대 코드(10자): 수간호사가 계정 없이 등록한 간호사 행마다 발급 → 그 행에 승인 없이 바로 연결
+"""
 import secrets
 import uuid
 from datetime import timedelta
@@ -84,15 +88,20 @@ def _join_by_invite(db: Session, user_id: uuid.UUID, code: str) -> dict:
     if n.invite_expires_at < now():
         raise unprocessable("INVITE_CODE_EXPIRED", "만료된 초대 코드입니다. 수간호사에게 재발급을 요청하세요")
     # 다른 병동에 걸어 둔 가입 신청은 의미가 없어지므로 취소한다 (나중에 승인되면 두 병동 소속이 됨)
-    for p in db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id,
-                                                        MembershipRequest.status == RequestStatus.PENDING)):
+    if p := _pending(db, user_id):
         p.status, p.processed_at = RequestStatus.CANCELLED, now()
     n.user_id, n.invite_code, n.invite_expires_at = user_id, None, None
     j = MembershipRequest(ward_id=n.ward_id, user_id=user_id, status=RequestStatus.APPROVED, via="INVITE_CODE",
                           processed_at=now())
     db.add(j)
     db.flush()
-    audit.log(db, n.ward_id, user_id, "MEMBERSHIP_JOINED_BY_INVITE", "NURSE", n.id)
+    account_name = db.get(User, user_id).name
+    audit.log(db, n.ward_id, user_id, "MEMBERSHIP_JOINED_BY_INVITE", "NURSE", n.id, None, f"account={account_name}")
+    # 승인 단계가 없으므로 수간호사에게 알린다. 코드가 다른 사람에게 넘어간 경우를 알아차리기 위함
+    body = f"{n.name}님이 초대 코드로 가입했습니다."
+    if account_name != n.name:
+        body += f" 가입한 계정 이름은 '{account_name}'입니다. 본인이 맞는지 확인하세요."
+    _notify_heads(db, n.ward_id, NotificationType.MEMBER_JOINED, "초대 코드 가입", body, n.id)
     return _request_view(db, j)
 
 
@@ -111,6 +120,34 @@ def issue_invite(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> dict:
     return {"nurseId": n.id, "code": n.invite_code, "expiresAt": iso(n.invite_expires_at)}
 
 
+def revoke_invite(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> None:
+    """발급한 초대 코드 취소 (코드가 다른 사람에게 넘어갔거나, 승인으로 연결하려는 경우)"""
+    m = members.require_head(db, user_id)
+    n = db.get(Nurse, nurse_id)
+    if n is None or n.ward_id != m.ward_id:
+        raise not_found("NURSE_NOT_FOUND")
+    if not has_active_invite(n):
+        raise not_found("INVITE_CODE_NOT_FOUND")
+    n.invite_code = n.invite_expires_at = None
+    audit.log(db, m.ward_id, user_id, "INVITE_CODE_REVOKED", "NURSE", n.id)
+
+
+def has_active_invite(n: Nurse) -> bool:
+    return n.invite_code is not None and n.invite_expires_at >= now()
+
+
+def cancel_request(db: Session, user_id: uuid.UUID) -> None:
+    """
+    대기 중인 가입 신청을 본인이 취소한다. 코드를 잘못 넣어 엉뚱한 병동에 신청하면
+    그 병동이 반려할 때까지 다른 병동 신청·병동 개설을 못 하므로 본인이 풀 수 있어야 한다
+    """
+    j = _pending(db, user_id)
+    if j is None:
+        raise not_found("REQUEST_NOT_FOUND")
+    j.status, j.processed_at = RequestStatus.CANCELLED, now()
+    audit.log(db, j.ward_id, user_id, "MEMBERSHIP_CANCELLED", "MEMBERSHIP_REQUEST", j.id)
+
+
 def latest_request(db: Session, user_id: uuid.UUID) -> dict | None:
     j = db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id)
                    .order_by(MembershipRequest.created_at.desc())).first()
@@ -118,7 +155,10 @@ def latest_request(db: Session, user_id: uuid.UUID) -> dict | None:
 
 
 def list_requests(db: Session, user_id: uuid.UUID, status: RequestStatus | None, page_no: int, size: int) -> dict:
-    """candidates: 이름이 같고 계정이 없는 기존 간호사. 승인 시 nurseId로 지정하면 그 행에 계정을 연결한다"""
+    """
+    candidates: 이름이 같고 계정이 없는 기존 간호사. 승인 시 nurseId로 지정하면 그 행에 계정을 연결한다.
+    유효한 초대 코드가 나가 있는 행은 그 코드를 받은 사람 몫이므로 후보에서 뺀다
+    """
     m = members.require_head(db, user_id)
     q = select(MembershipRequest).where(MembershipRequest.ward_id == m.ward_id)
     if status:
@@ -129,7 +169,8 @@ def list_requests(db: Session, user_id: uuid.UUID, status: RequestStatus | None,
     out = []
     for j in db.scalars(q.order_by(MembershipRequest.created_at.desc()).offset(page_no * size).limit(size)):
         v = _request_view(db, j)
-        v["candidates"] = [n.id for n in unlinked if n.name == v["name"]] if j.status == RequestStatus.PENDING else []
+        v["candidates"] = [n.id for n in unlinked if n.name == v["name"] and not has_active_invite(n)] \
+            if j.status == RequestStatus.PENDING else []
         out.append(v)
     return page(out, page_no, size, total)
 
@@ -148,7 +189,12 @@ def approve(db: Session, user_id: uuid.UUID, request_id: uuid.UUID, link_nurse_i
             raise not_found("NURSE_NOT_FOUND")
         if n.user_id is not None or n.status == NurseStatus.RETIRED:
             raise unprocessable("NURSE_NOT_LINKABLE", "계정이 없는 재직 간호사에게만 연결할 수 있습니다")
+        # 초대 코드를 받은 사람이 따로 있는데 다른 신청자를 연결하면 그 코드가 조용히 무효가 된다
+        if has_active_invite(n):
+            raise conflict("INVITE_CODE_OUTSTANDING",
+                           "초대 코드가 발급된 간호사입니다. 코드로 가입하게 하거나 코드를 취소한 뒤 연결하세요")
         n.user_id, n.role = j.user_id, Role.NURSE
+        n.invite_code = n.invite_expires_at = None  # 만료된 코드가 남아 있으면 정리
     else:
         n = Nurse(ward_id=m.ward_id, user_id=j.user_id, name=db.get(User, j.user_id).name,
                   joined_at=today_kst(), affiliation_start=today_kst())
@@ -208,6 +254,13 @@ def transfer_head(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> dict:
     target.role, me.role = Role.HEAD_NURSE, Role.NURSE
     audit.log(db, m.ward_id, user_id, "HEAD_NURSE_TRANSFERRED", "NURSE", nurse_id, f"nurse:{me.id}", f"nurse:{nurse_id}")
     return {"from": members.view(me), "to": members.view(target)}
+
+
+def _notify_heads(db: Session, ward_id: uuid.UUID, type_: NotificationType, title: str, body: str,
+                  nurse_id: uuid.UUID) -> None:
+    for h in db.scalars(select(Nurse).where(Nurse.ward_id == ward_id, Nurse.role == Role.HEAD_NURSE,
+                                            Nurse.status != NurseStatus.RETIRED)):
+        notifications.notify_user(db, h.user_id, type_, title, body, "NURSE", nurse_id)
 
 
 def count_heads(db: Session, ward_id: uuid.UUID) -> int:

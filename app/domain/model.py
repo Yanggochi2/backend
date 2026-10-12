@@ -90,6 +90,7 @@ class NotificationType(StrEnum):
     MEMBERSHIP_REJECTED = "MEMBERSHIP_REJECTED"
     DUTY_REMINDER = "DUTY_REMINDER"
     LOCK_TAKEN_OVER = "LOCK_TAKEN_OVER"
+    MEMBER_JOINED = "MEMBER_JOINED"  # 초대 코드로 승인 없이 가입 → 수간호사에게 알림
 
 
 class Preset(StrEnum):

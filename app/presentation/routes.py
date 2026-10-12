@@ -82,6 +82,12 @@ def request_membership(body: s.JoinRequest, user_id: UserId, db: DB):
     return _d(wards.request_join(db, user_id, body.join_code))
 
 
+@api.delete("/ward-membership-requests/me", status_code=204)
+def cancel_membership_request(user_id: UserId, db: DB):
+    """대기 중인 내 가입 신청 취소"""
+    wards.cancel_request(db, user_id)
+
+
 @api.get("/wards/me/membership-requests")
 def membership_requests(user_id: UserId, db: DB, p: Page, status: RequestStatus | None = None):
     return wards.list_requests(db, user_id, status, p.page, p.size)
@@ -126,6 +132,11 @@ def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
 @api.post("/wards/me/nurses/{nurse_id}/invite-code", status_code=201)
 def issue_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(wards.issue_invite(db, user_id, nurse_id))
+
+
+@api.delete("/wards/me/nurses/{nurse_id}/invite-code", status_code=204)
+def revoke_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    wards.revoke_invite(db, user_id, nurse_id)
 
 
 @api.get("/wards/me/nurses")
