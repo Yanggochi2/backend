@@ -506,6 +506,12 @@ def _off_target(db: Session, s: Schedule) -> int:
     return len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month))) + 1
 
 
+def release_locks(db: Session, ward_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """병동을 떠난 계정이 쥐고 있던 편집 잠금을 푼다"""
+    for s in db.scalars(select(Schedule).where(Schedule.ward_id == ward_id, Schedule.locked_by == user_id)):
+        _unlock(s)
+
+
 def _grant_lock(db: Session, s: Schedule, user_id: uuid.UUID) -> dict:
     token = secrets.token_urlsafe(32)
     s.locked_by, s.locked_at, s.lock_activity_at, s.lock_token_hash = user_id, now(), now(), sha256(token)
