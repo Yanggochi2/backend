@@ -1,7 +1,7 @@
 """개인 초대 코드: 미리 등록한 간호사 행에 계정을 승인 없이 연결"""
 from datetime import timedelta
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from conftest import NEXT, add_nurses, err, member, user, ward_head
 from app.persistence.db import SessionLocal, now
@@ -169,3 +169,27 @@ def test_unlink_rules():
     # 수간호사였던 계정을 해제하면 권한도 남지 않는다
     h.data("POST", f"/wards/me/head-nurses/{nid}/grant")
     assert h.data("POST", f"/wards/me/nurses/{nid}/unlink-account", {"reason": "x"})["role"] == "NURSE"
+
+
+def test_concurrent_join_code_rotation_conflicts():
+    """API-WARD-08: 다른 수간호사가 먼저 재발급하면 409 ROTATION_IN_PROGRESS (덮어쓰지 않음)"""
+    import uuid as _uuid
+
+    import pytest
+
+    from app.business import wards
+    from app.business.common import ApiException
+    from app.persistence.models import Ward
+
+    h = ward_head()
+    head_id = _uuid.UUID(h.data("GET", "/me")["user"]["id"])
+    before = h.data("GET", "/wards/me/join-code")["code"]
+    with SessionLocal() as slow:
+        stale = slow.get(Ward, slow.scalar(select(Nurse.ward_id).where(Nurse.user_id == head_id)))  # 옛 코드를 읽어 둔 상태
+        assert stale.code == before
+        won = h.data("POST", "/wards/me/join-code/rotate")["code"]  # 그 사이 다른 쪽이 재발급
+        with pytest.raises(ApiException) as e:
+            wards.rotate_code(slow, head_id)
+        assert e.value.code == "ROTATION_IN_PROGRESS"
+        slow.rollback()
+    assert won != before and h.data("GET", "/wards/me/join-code")["code"] == won, "먼저 바꾼 코드가 유지됨"

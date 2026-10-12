@@ -7,7 +7,7 @@ import secrets
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.business import audit, members, notifications, nurses, requests, rules, schedules
@@ -224,10 +224,18 @@ def join_code(db: Session, user_id: uuid.UUID) -> dict:
 
 
 def rotate_code(db: Session, user_id: uuid.UUID) -> dict:
-    """AUTH-05. 기존 코드는 즉시 무효. 동시 재발급은 Ward 행 갱신 충돌로 409가 된다"""
+    """
+    AUTH-05. 기존 코드는 즉시 무효.
+    두 수간호사가 동시에 재발급하면 나중 쪽이 앞의 결과를 모른 채 덮어쓰므로, 읽은 코드가 그대로일 때만 바꾸고
+    아니면 409 ROTATION_IN_PROGRESS (API-WARD-08)
+    """
     m = members.require_head(db, user_id)
     w = db.get(Ward, m.ward_id)
-    w.code, w.code_issued_at = _new_code(db), now()
+    changed = db.execute(update(Ward).where(Ward.id == w.id, Ward.code == w.code)
+                         .values(code=_new_code(db), code_issued_at=now())).rowcount
+    if changed == 0:
+        raise conflict("ROTATION_IN_PROGRESS", "다른 수간호사가 방금 코드를 재발급했습니다. 새로고침 후 확인하세요")
+    db.refresh(w)
     audit.log(db, w.id, user_id, "JOIN_CODE_ISSUED", "WARD", w.id)
     return _code_view(w)
 
