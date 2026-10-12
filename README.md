@@ -4,8 +4,11 @@
 
 ## 빠른 실행 (Docker만 있으면 됨)
 ```bash
+cp .env.example .env             # 설정 파일 (기본값 그대로 써도 됨. 없으면 같은 기본값으로 뜬다)
 docker compose up --build -d     # PostgreSQL + API
 ```
+- 설정은 `.env`에서 읽는다: DB 계정(`POSTGRES_*`), `COOKIE_SECURE`, `API_PORT`, `REMINDER_EVERY_SECONDS`. 설명은 [.env.example](.env.example)
+- `.env`는 git에 올리지 않는다(`.gitignore`). **배포 환경에서는 `POSTGRES_PASSWORD`를 바꾸고 HTTPS면 `COOKIE_SECURE=true`**
 - API 문서: http://localhost:8000/docs (Swagger), 기본 경로 `/api/v1`
 - 로그: `docker compose logs -f api` / 중지: `docker compose down` / DB까지 초기화: `docker compose down -v`
 - 데이터는 `pgdata` 볼륨에 남는다. 테이블은 서버 시작 시 자동 생성
@@ -19,8 +22,8 @@ uv run uvicorn app.main:app --reload            # SQLite 파일(nurs-local.db), 
 
 | 환경 변수 | 기본값 | 설명 |
 |---|---|---|
-| `DATABASE_URL` | `sqlite:///./nurs-local.db` | DB 연결 (compose에서는 PostgreSQL) |
-| `COOKIE_SECURE` | `true` | 쿠키 Secure 속성. http 로컬이면 `false` (compose는 `false`) |
+| `DATABASE_URL` | `sqlite:///./nurs-local.db` | DB 연결 (compose에서는 `.env`의 `POSTGRES_*`로 조립) |
+| `COOKIE_SECURE` | `true` | 쿠키 Secure 속성. http 로컬이면 `false` (compose 기본은 `false`) |
 | `REMINDER_EVERY_SECONDS` | (없음 = 매일 18시 KST) | 근무 전날 리마인드 주기. 테스트용 |
 
 ## 테스트
