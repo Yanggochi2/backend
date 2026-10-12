@@ -72,6 +72,8 @@ class MembershipRequest(Base):
     ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[RequestStatus] = mapped_column(_enum(RequestStatus), default=RequestStatus.PENDING)
+    # JOIN_CODE: 병동 공용 코드 → 승인 대기 / INVITE_CODE: 개인 초대 코드 → 즉시 APPROVED
+    via: Mapped[str] = mapped_column(String(20), default="JOIN_CODE")
     created_at: Mapped[datetime] = mapped_column(default=now)
     processed_at: Mapped[datetime | None]
     processed_by: Mapped[uuid.UUID | None]
@@ -99,6 +101,9 @@ class Nurse(Base):
     affiliation_start: Mapped[date]
     affiliation_end: Mapped[date | None]
     preceptor_of: Mapped[list] = mapped_column(JSON, default=list)  # UUID 문자열
+    # 계정 없이 등록된 간호사에게 주는 1회용 개인 초대 코드. 쓰면 이 행에 계정이 연결된다
+    invite_code: Mapped[str | None] = mapped_column(String(10), unique=True)
+    invite_expires_at: Mapped[datetime | None]
     version: Mapped[int] = mapped_column(default=0)
     __mapper_args__ = {"version_id_col": version}
 
