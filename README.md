@@ -78,6 +78,7 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 | AUTH-03 세션 갱신 | 리프레시 토큰 회전. 쓴 토큰은 즉시 폐기 |
 | WARD-01 병동 개설 | requiredStaff D/E/N 각 0 이상·합계 1 이상, 아니면 422 `INVALID_STAFFING`. 가입 대기 중이면 409 |
 | WARD-03 가입 신청 | 코드 대소문자 무시, 계정당 시간당 10회. 신청 상태는 `GET /me`의 `membershipRequest`로 조회 |
+| WARD-08 가입 코드 재발급 | 읽은 코드가 그대로일 때만 바꾼다. 다른 수간호사가 먼저 재발급했으면 409 `ROTATION_IN_PROGRESS` (덮어쓰지 않음) |
 | WARD-05 가입 승인 | 본문 없음이 기본. 선택적으로 `{nurseId}`를 주면 계정 없는 기존 간호사 행에 연결 |
 | RULE-06·07 OFF 목표 | 근무표가 있는 달만 (없으면 404 `TARGET_NOT_FOUND`). 자동값 = 공휴일 수 + 1, `targetCount: null`이면 자동으로 복귀 |
 | RULE-05 공휴일 | 매년 같은 날짜의 공휴일만 기본 제공. 설·추석·대체공휴일은 병동이 보정 |
