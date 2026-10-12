@@ -146,6 +146,12 @@ def issue_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(wards.issue_invite(db, user_id, nurse_id))
 
 
+@api.post("/wards/me/nurses/{nurse_id}/unlink-account")
+def unlink_account(nurse_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
+    """잘못 연결된 계정 해제. 행은 유지되고 새 초대 코드를 발급할 수 있다"""
+    return _d(wards.unlink_account(db, user_id, nurse_id, body.reason if body else None))
+
+
 @api.delete("/wards/me/nurses/{nurse_id}/invite-code", status_code=204)
 def revoke_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
     wards.revoke_invite(db, user_id, nurse_id)

@@ -10,7 +10,7 @@ from datetime import timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.business import audit, members, notifications, requests, rules, schedules
+from app.business import audit, members, notifications, nurses, requests, rules, schedules
 from app.business.common import (RateLimiter, conflict, iso, not_found, page, require_reason, today_kst,
                                  unprocessable)
 from app.domain.model import NotificationType, NurseStatus, Preset, RequestStatus, Role
@@ -284,6 +284,36 @@ def cancel_pending(db: Session, user_id: uuid.UUID) -> None:
     for j in db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id,
                                                         MembershipRequest.status == RequestStatus.PENDING)):
         j.status, j.processed_at = RequestStatus.CANCELLED, now()
+
+
+def unlink_account(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, reason: str | None) -> dict:
+    """
+    잘못 연결된 계정을 간호사 행에서 떼어낸다 (초대 코드가 다른 사람에게 넘어갔거나, 승인 때 다른 행을 고른 경우).
+    행은 재직 상태 그대로 두므로 근무표·이력은 유지되고, 새 초대 코드를 발급해 올바른 사람을 연결할 수 있다
+    """
+    reason = require_reason(reason)
+    m = members.require_head(db, user_id)
+    n = db.get(Nurse, nurse_id)
+    if n is None or n.ward_id != m.ward_id:
+        raise not_found("NURSE_NOT_FOUND")
+    if n.id == m.nurse_id:
+        raise conflict("CANNOT_UNLINK_SELF", "본인 계정은 해제할 수 없습니다. 병동 탈퇴를 이용하세요")
+    if n.user_id is None:
+        raise conflict("NURSE_NOT_LINKED", "계정이 연결되지 않은 간호사입니다")
+    if n.status == NurseStatus.RETIRED:
+        raise unprocessable("NURSE_NOT_ELIGIBLE", "퇴사한 간호사입니다")
+    account = db.get(User, n.user_id)
+    before_role = n.role
+    n.user_id, n.role = None, Role.NURSE  # 수간호사였어도 해제하면 권한은 남기지 않는다 (요청자가 수간호사라 0명이 되지 않음)
+    db.flush()
+    cancelled = requests.cancel_pending(db, n.id)
+    schedules.release_locks(db, m.ward_id, account.id)
+    audit.log(db, m.ward_id, user_id, "MEMBER_UNLINKED", "NURSE", n.id, f"account={account.name} role={before_role}",
+              f"reason={reason} cancelledRequests={cancelled}")
+    w = db.get(Ward, m.ward_id)
+    notifications.notify_user(db, account.id, NotificationType.MEMBER_UNLINKED, "병동 계정 연결 해제",
+                              f"{w.ward_name}에서 계정 연결이 해제되었습니다. 사유: {reason}", "WARD", w.id)
+    return nurses.view(n, True)
 
 
 def _notify_heads(db: Session, ward_id: uuid.UUID, type_: NotificationType, title: str, body: str,

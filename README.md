@@ -60,6 +60,7 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 | POST | /wards/me/membership/leave | 병동 구성원 | 병동 탈퇴 (204). 마지막 수간호사 409 `LAST_HEAD_NURSE` |
 | DELETE | /me | 인증 사용자 | 계정 탈퇴 (204). 본문 `{password}` 재확인, 틀리면 401. 소속이 있으면 병동 탈퇴를 먼저 수행 |
 | DELETE | /ward-membership-requests/me | 로그인 | 대기 중인 내 가입 신청 취소. 없으면 404 `REQUEST_NOT_FOUND` |
+| POST | /wards/me/nurses/{nurseId}/unlink-account | HEAD_NURSE | 잘못 연결된 계정 해제 `{reason}`. 행은 재직 유지, 대기 신청 취소, 새 초대 코드 발급 가능 |
 
 - `POST /ward-membership-requests`의 `joinCode`에 **개인 초대 코드**를 넣으면 승인 없이 그 간호사 행에 계정이 연결된다 (응답 `status: APPROVED`, `via: INVITE_CODE`). 병동 공용 코드(8자)는 지금처럼 승인 대기. 만료 코드 422 `INVITE_CODE_EXPIRED`
 - 간호사 응답에 `inviteExpiresAt`(수간호사만, 발급된 코드가 있을 때)
