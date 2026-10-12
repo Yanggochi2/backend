@@ -104,6 +104,20 @@ def reject(db: Session, user_id: uuid.UUID, request_id: uuid.UUID, reason: str |
     return view(db, r)
 
 
+def withdraw_all(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> int:
+    """탈퇴 시: 대기 중인 신청과 종료일 이후 날짜가 있는 승인 신청을 취소한다. 초안의 AL도 지운다"""
+    n = 0
+    for r in db.scalars(select(WorkRequest).where(WorkRequest.nurse_id == nurse_id, WorkRequest.status.in_(ACTIVE))):
+        future = [d for d in r.dates() if d > end]
+        if r.status == RequestStatus.APPROVED and not future:
+            continue  # 이미 지난 연차·희망은 기록으로 남긴다
+        if r.status == RequestStatus.APPROVED and r.type == RequestType.ANNUAL_LEAVE:
+            schedules.sync_leave(db, ward_id, nurse_id, future, False)
+        r.status = RequestStatus.CANCELLED
+        n += 1
+    return n
+
+
 def mine(db: Session, user_id: uuid.UUID, ym: str | None, type_: RequestType | None, status: RequestStatus | None,
          page_no: int, size: int) -> dict:
     m = members.require(db, user_id)

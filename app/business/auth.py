@@ -11,7 +11,7 @@ from app.business import audit, members, wards
 from app.business.common import ApiException, RateLimiter, conflict, sha256
 from app.domain.model import AccountStatus
 from app.persistence.db import now
-from app.persistence.models import SessionToken, User
+from app.persistence.models import IdempotencyRecord, Notification, SessionToken, User
 
 ACCESS_TTL = timedelta(minutes=30)
 REFRESH_TTL = timedelta(days=14)  # 🔶 권장값
@@ -66,6 +66,26 @@ def authenticate(db: Session, access_token: str | None) -> uuid.UUID:
 def logout(db: Session, user_id: uuid.UUID, access_token: str | None) -> None:
     db.execute(delete(SessionToken).where(SessionToken.access_hash == sha256(access_token or "")))
     audit.log(db, _ward_of(db, user_id), user_id, "LOGOUT", "USER", user_id)
+
+
+def withdraw(db: Session, user_id: uuid.UUID, password: str) -> None:
+    """
+    계정 탈퇴. 소속이 있으면 병동 탈퇴를 먼저 하고(마지막 수간호사면 409), 세션·알림·멱등 응답을 지운 뒤
+    계정 정보를 익명화한다. 지난 근무표의 이름은 간호사 행에 기록으로 남는다. 같은 이메일로 다시 가입할 수 있다
+    """
+    u = db.get(User, user_id)
+    if not bcrypt.checkpw(password.encode(), u.password_hash.encode()):
+        raise ApiException(401, "INVALID_CREDENTIALS", "비밀번호가 올바르지 않습니다")
+    ward_id = _ward_of(db, user_id)
+    if ward_id:
+        wards.leave(db, user_id, "계정 탈퇴")
+    wards.cancel_pending(db, user_id)
+    for model in (SessionToken, Notification, IdempotencyRecord):
+        db.execute(delete(model).where(model.user_id == user_id))
+    u.email, u.name = f"deleted-{u.id}@deleted.invalid", "탈퇴한 사용자"
+    u.password_hash = bcrypt.hashpw(secrets.token_bytes(16), bcrypt.gensalt()).decode()
+    u.status, u.notification_settings = AccountStatus.WITHDRAWN, {}
+    audit.log(db, ward_id, user_id, "ACCOUNT_DELETED", "USER", user_id)
 
 
 def me(db: Session, user_id: uuid.UUID) -> dict:

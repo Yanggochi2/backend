@@ -321,6 +321,28 @@ def sync_leave(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, dates: list
     return {"scheduleId": s.id, "yearMonth": s.year_month, "version": s.version, "changedCells": changed}
 
 
+def clear_after(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> tuple[list[str], list[str]]:
+    """
+    탈퇴한 간호사의 소속 종료일 이후 셀 정리. 초안은 지우고(version 증가), 확정본은 바꾸지 않는다.
+    (지운 초안 월, 수간호사가 확인해야 할 확정본 월)을 돌려준다
+    """
+    cleared, confirmed = [], []
+    for s in db.scalars(select(Schedule).where(Schedule.ward_id == ward_id,
+                                               Schedule.status.in_([ScheduleStatus.DRAFT, ScheduleStatus.CONFIRMED]))
+                        .order_by(Schedule.year_month)):
+        after = [a for a in _assignments(db, s.id) if a.nurse_id == nurse_id and a.date > end]
+        if not after:
+            continue
+        if s.status == ScheduleStatus.CONFIRMED:
+            confirmed.append(s.year_month)
+            continue
+        for a in after:
+            db.delete(a)
+        touch(db, s)
+        cleared.append(s.year_month)
+    return cleared, confirmed
+
+
 def is_confirmed(db: Session, ward_id: uuid.UUID, d: date) -> bool:
     """확정·보관된 월인지"""
     s = by_month(db, ward_id, d.replace(day=1))
