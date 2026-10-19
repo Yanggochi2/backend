@@ -52,6 +52,8 @@ def test_reject_with_reason():
     h = ward_head()
     n = user()
     rid = n.data("POST", "/ward-membership-requests", {"joinCode": h.data("GET", "/wards/me/join-code")["code"]})["id"]
+    e = err(h("POST", f"/wards/me/membership-requests/{rid}/reject", {"reason": "가" * 301}), 400, "VALIDATION_ERROR")
+    assert e["fieldErrors"] == [{"field": "reason", "reason": "TOO_LONG"}]
     r = h.data("POST", f"/wards/me/membership-requests/{rid}/reject", {"reason": "소속 아님"})
     assert r["status"] == "REJECTED" and r["rejectionReason"] == "소속 아님"
 

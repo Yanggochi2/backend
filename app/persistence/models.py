@@ -49,6 +49,8 @@ class Ward(Base):
     code: Mapped[str] = mapped_column(String(8), unique=True)
     code_issued_at: Mapped[datetime] = mapped_column(default=now)
     created_at: Mapped[datetime] = mapped_column(default=now)
+    version: Mapped[int] = mapped_column(default=0)
+    __mapper_args__ = {"version_id_col": version}
 
 
 class WardRule(Base):
