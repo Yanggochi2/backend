@@ -79,7 +79,7 @@ def patch(db: Session, user_id: uuid.UUID, rule_id: uuid.UUID, changes: dict, re
     if version is not None and version != r.version:
         raise conflict("VERSION_CONFLICT", "다른 사용자가 먼저 수정했습니다")
     d = CATALOG[r.code]
-    enabled = changes.get("enabled", r.enabled)
+    enabled = r.enabled if changes.get("enabled") is None else changes["enabled"]  # null은 생략과 같게
     severity = changes.get("severity") or r.severity
     params = changes.get("parameters", r.parameters)
     if d.locked and (not enabled or severity != HARD):
@@ -129,7 +129,8 @@ def _check_params(code: str, params) -> None:
             check_staffing(params)
         except ApiException:
             raise bad_request("INVALID_RULE_VALUE", "필요 인원은 0 이상 정수, 합계 1 이상", "parameters") from None
-    elif "max" in params and (not isinstance(params["max"], int) or not 1 <= params["max"] <= 31):
+    elif "max" in params and (not isinstance(params["max"], int) or isinstance(params["max"], bool)
+                              or not 1 <= params["max"] <= 31):
         raise bad_request("INVALID_RULE_VALUE", "max는 1~31", "parameters")
 
 
