@@ -34,6 +34,8 @@ def export_schedule(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> 
         row = [r.cell(n.id, d) for d in days]
         ws.append([n.name] + [str(x) if x else None for x in row] + [row.count(x) for x in (Duty.D, Duty.E, Duty.N,
                                                                                             Duty.O, Duty.AL)])
+        # openpyxl은 "="로 시작하는 문자열을 수식으로 저장한다. 이름은 항상 텍스트로 (수식 주입 방지)
+        ws.cell(ws.max_row, 1).data_type = "s"
         for i, x in enumerate(row):
             if x:
                 c = ws.cell(ws.max_row, 2 + i)
