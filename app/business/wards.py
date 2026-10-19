@@ -167,6 +167,8 @@ def transfer_head(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> dict:
 
 
 def count_heads(db: Session, ward_id: uuid.UUID) -> int:
+    """병동 행을 잠가 "마지막 수간호사" 검사가 동시 퇴사·해제와 경쟁하지 않게 한다 (트랜잭션 끝까지 유지)"""
+    db.get(Ward, ward_id, with_for_update=True)
     return db.scalar(select(func.count()).where(Nurse.ward_id == ward_id, Nurse.role == Role.HEAD_NURSE,
                                                 Nurse.status != NurseStatus.RETIRED))
 
