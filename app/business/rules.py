@@ -42,6 +42,8 @@ _MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY"
 # ponytail: 음력·대체공휴일 자동 계산 없음. 필요하면 공공데이터 특일 API 연동
 DEFAULT_HOLIDAYS = {(1, 1): "신정", (3, 1): "삼일절", (5, 5): "어린이날", (6, 6): "현충일", (8, 15): "광복절",
                     (10, 3): "개천절", (10, 9): "한글날", (12, 25): "기독탄신일"}
+# 2026년 공휴일법 개정으로 추가 (그 전 해에는 공휴일 아님)
+HOLIDAYS_SINCE_2026 = {(5, 1): "노동절", (7, 17): "제헌절"}
 
 
 def seed(db: Session, ward_id: uuid.UUID, preset: Preset, staff: dict) -> None:
@@ -79,7 +81,7 @@ def patch(db: Session, user_id: uuid.UUID, rule_id: uuid.UUID, changes: dict, re
     if version is not None and version != r.version:
         raise conflict("VERSION_CONFLICT", "다른 사용자가 먼저 수정했습니다")
     d = CATALOG[r.code]
-    enabled = changes.get("enabled", r.enabled)
+    enabled = r.enabled if changes.get("enabled") is None else changes["enabled"]  # null은 생략과 같게
     severity = changes.get("severity") or r.severity
     params = changes.get("parameters", r.parameters)
     if d.locked and (not enabled or severity != HARD):
@@ -145,7 +147,8 @@ def _check_params(code: str, params) -> None:
             check_staffing(params)
         except ApiException:
             raise bad_request("INVALID_RULE_VALUE", "필요 인원은 0 이상 정수, 합계 1 이상", "parameters") from None
-    elif "max" in params and (not isinstance(params["max"], int) or not 1 <= params["max"] <= 31):
+    elif "max" in params and (not isinstance(params["max"], int) or isinstance(params["max"], bool)
+                              or not 1 <= params["max"] <= 31):
         raise bad_request("INVALID_RULE_VALUE", "max는 1~31", "parameters")
 
 
@@ -160,7 +163,8 @@ def in_month(db: Session, ward_id: uuid.UUID, first: date) -> list[dict]:
     """기본 공휴일에 병동 보정을 덮어쓴 결과. isHoliday=false는 기본 공휴일을 근무일로 바꾼 보정"""
     out = {first.replace(day=d): {"date": first.replace(day=d).isoformat(), "name": name, "isHoliday": True,
                                   "source": "DEFAULT", "reason": None}
-           for (mo, d), name in DEFAULT_HOLIDAYS.items() if mo == first.month}
+           for (mo, d), name in (DEFAULT_HOLIDAYS | (HOLIDAYS_SINCE_2026 if first.year >= 2026 else {})).items()
+           if mo == first.month}
     for h in db.scalars(select(Holiday).where(Holiday.ward_id == ward_id, Holiday.date >= first,
                                               Holiday.date <= month_end(first))):
         out[h.date] = {"date": h.date.isoformat(), "name": h.name, "isHoliday": h.is_holiday, "source": "WARD",
