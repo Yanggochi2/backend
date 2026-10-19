@@ -1,4 +1,6 @@
 """API-WARD-01~10 병동 개설·가입·권한"""
+import uuid
+
 from conftest import err, member, user, ward_head
 
 
@@ -74,3 +76,23 @@ def test_other_ward_ids_are_hidden():
     h, other = ward_head(), ward_head()
     _, nid = member(h)
     err(other("POST", f"/wards/me/head-nurses/{nid}/grant"), 404, "NURSE_NOT_FOUND")
+
+
+def test_one_active_membership_per_user():
+    """동시 개설·승인 경쟁을 DB 제약이 막는지 (재직 소속 중복 insert → IntegrityError)"""
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    from app.domain.model import NurseStatus
+    from app.persistence.db import SessionLocal
+    from app.persistence.models import Nurse
+    h = ward_head()
+    with SessionLocal() as db:
+        n = db.get(Nurse, uuid.UUID(h.data("GET", "/me")["membership"]["id"]))
+        dup = dict(ward_id=n.ward_id, user_id=n.user_id, name="중복", joined_at=n.joined_at,
+                   affiliation_start=n.affiliation_start)
+        db.add(Nurse(**dup, status=NurseStatus.RETIRED))  # 퇴직 이력은 허용
+        db.flush()
+        db.add(Nurse(**dup))
+        with pytest.raises(IntegrityError):
+            db.flush()
