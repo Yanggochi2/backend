@@ -128,6 +128,7 @@ def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledge
     """SCH-07. 대기 신청 0 · 하드 위반 0 · 모든 소프트 위반 확인(acknowledged)이어야 확정"""
     m = members.require_head(db, user_id)
     s = find(db, m, schedule_id)
+    db.refresh(s, with_for_update=True)  # 신청 생성(requests.create)과 직렬화: 확정 직전 들어온 신청을 놓치지 않게
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 확정할 수 있습니다. 현재: {s.status}")
     if _lock_active(s) and s.locked_by != user_id:
@@ -321,9 +322,9 @@ def sync_leave(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, dates: list
     return {"scheduleId": s.id, "yearMonth": s.year_month, "version": s.version, "changedCells": changed}
 
 
-def is_confirmed(db: Session, ward_id: uuid.UUID, d: date) -> bool:
-    """확정·보관된 월인지"""
-    s = by_month(db, ward_id, d.replace(day=1))
+def is_confirmed(db: Session, ward_id: uuid.UUID, d: date, lock: bool = False) -> bool:
+    """확정·보관된 월인지. lock이면 확정(confirm)과 직렬화되도록 근무표 행을 잠근다"""
+    s = by_month(db, ward_id, d.replace(day=1), lock)
     return s is not None and s.status in VISIBLE_TO_NURSES
 
 
@@ -381,9 +382,9 @@ def find(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
     return _visible(s, m)
 
 
-def by_month(db: Session, ward_id: uuid.UUID, first: date) -> Schedule | None:
-    return db.scalar(select(Schedule).where(Schedule.ward_id == ward_id,
-                                            Schedule.year_month == first.strftime("%Y-%m")))
+def by_month(db: Session, ward_id: uuid.UUID, first: date, lock: bool = False) -> Schedule | None:
+    q = select(Schedule).where(Schedule.ward_id == ward_id, Schedule.year_month == first.strftime("%Y-%m"))
+    return db.scalar(q.with_for_update() if lock else q)
 
 
 def touch(db: Session, s: Schedule) -> None:
