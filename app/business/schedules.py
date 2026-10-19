@@ -231,6 +231,7 @@ def editable(db: Session, s: Schedule, m: Member, lock_token: str | None, base_v
     근무표 변경 공통 전제: DRAFT, 잠금(활성 잠금이 있으면 그 토큰 필요), baseVersion 일치.
     잠금이 없으면 baseVersion만으로 충돌을 막는다
     """
+    db.refresh(s, with_for_update=True)  # 잠금 획득·인수와 직렬화: 오래된 잠금 상태로 판단하지 않게
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 편집할 수 있습니다. 현재: {s.status}")
     if _lock_active(s):
@@ -363,6 +364,7 @@ def _visible(s: Schedule | None, m: Member) -> Schedule:
 
 def _draft(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
     s = find(db, m, schedule_id)
+    db.refresh(s, with_for_update=True)  # 잠금 판단과 기록을 원자적으로 (동시 획득 시 한쪽만 성공)
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 가능합니다. 현재: {s.status}")
     return s
