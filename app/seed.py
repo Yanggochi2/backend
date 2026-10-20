@@ -20,7 +20,14 @@ ACCOUNTS = [("이하늘", "nurse1@demo.nurs"), ("박서연", "nurse2@demo.nurs")
 # 계정 없이 수간호사가 등록한 간호사: (이름, 듀티 역할, 경력 개월)
 ROSTER = [("정차지", DutyRole.CHARGE, 120), ("강프리", DutyRole.PRECEPTOR, 60), ("윤신입", DutyRole.NEW, 3),
           ("한지민", DutyRole.GENERAL, 36), ("오세훈", DutyRole.GENERAL, 24), ("서유진", DutyRole.GENERAL, 48),
-          ("임도윤", DutyRole.GENERAL, 18), ("배수아", DutyRole.GENERAL, 30), ("조하린", DutyRole.GENERAL, 12)]
+          ("임도윤", DutyRole.GENERAL, 18), ("배수아", DutyRole.GENERAL, 30), ("조하린", DutyRole.GENERAL, 12),
+          ("문가람", DutyRole.CHARGE, 96), ("신예린", DutyRole.CHARGE, 84), ("권태오", DutyRole.PRECEPTOR, 54),
+          ("황보람", DutyRole.PRECEPTOR, 66), ("남궁솔", DutyRole.NEW, 2), ("유채원", DutyRole.NEW, 5),
+          ("장하준", DutyRole.GENERAL, 40), ("송지아", DutyRole.GENERAL, 28), ("백승호", DutyRole.GENERAL, 22),
+          ("노은서", DutyRole.GENERAL, 15), ("하윤아", DutyRole.GENERAL, 33), ("전민재", DutyRole.GENERAL, 45),
+          ("구다은", DutyRole.GENERAL, 26), ("홍시우", DutyRole.GENERAL, 19), ("천소율", DutyRole.GENERAL, 38),
+          ("엄지후", DutyRole.GENERAL, 52), ("류나연", DutyRole.GENERAL, 14)]
+# 수간호사 1 + 계정 3 + 등록 26 = 30명
 
 
 def _user(db, name: str, email: str) -> User:
@@ -40,7 +47,7 @@ def _nurse_fields(name: str, duty_role: DutyRole, career: int, start: date) -> d
 def seed(db) -> None:
     head = _user(db, *HEAD)
     if members.membership(db, head.id) is None:
-        wards.create(db, head.id, "한빛대학병원", "7병동", {"D": 2, "E": 2, "N": 2}, Preset.STANDARD)
+        wards.create(db, head.id, "한빛대학병원", "7병동", {"D": 6, "E": 5, "N": 4}, Preset.STANDARD)
     ward_id = members.membership(db, head.id).ward_id
     start = today_kst()
 
