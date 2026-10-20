@@ -59,3 +59,35 @@ def test_delete_account():
     Api().data("POST", "/auth/signup", {"name": "새", "email": email, "password": "pass1234", "termsAgreed": True},
                status=201)
     err(h("DELETE", "/me", {"password": "pass1234"}), 409, "LAST_HEAD_NURSE")
+
+
+def test_delete_account_password_attempts_are_limited():
+    n = user()
+    for _ in range(5):
+        err(n("DELETE", "/me", {"password": "wrong1234"}), 401, "INVALID_CREDENTIALS")
+    err(n("DELETE", "/me", {"password": "pass1234"}), 429, "RATE_LIMITED")
+
+
+def test_leave_keeps_past_dates_of_approved_request():
+    """종료일을 걸친 승인 신청은 지난 날짜만 남기고 승인 유지, 전부 미래면 취소"""
+    import uuid
+    from datetime import timedelta
+
+    from app.business.requests import withdraw_all
+    from app.domain.model import RequestStatus, RequestType
+    from app.persistence.db import SessionLocal
+    from app.persistence.models import Nurse, WorkRequest
+    h = ward_head()
+    nid = uuid.UUID(h.data("GET", "/me")["membership"]["id"])
+    end = NEXT.replace(day=10)
+    with SessionLocal() as db:
+        ward_id = db.get(Nurse, nid).ward_id
+        mk = lambda days: WorkRequest(ward_id=ward_id, nurse_id=nid, type=RequestType.PREFERRED_OFF,  # noqa: E731
+                                      year_month=YM, status=RequestStatus.APPROVED, reason_code="PERSONAL",
+                                      target_dates=[(end + timedelta(days=d)).isoformat() for d in days])
+        span, future = mk([-1, 1]), mk([2])
+        db.add_all([span, future])
+        db.flush()
+        assert withdraw_all(db, ward_id, nid, end) == 2
+        assert span.status == RequestStatus.APPROVED and span.target_dates == [(end - timedelta(days=1)).isoformat()]
+        assert future.status == RequestStatus.CANCELLED
