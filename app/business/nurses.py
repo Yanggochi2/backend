@@ -142,3 +142,17 @@ def _get(db: Session, m: Member, nurse_id: uuid.UUID) -> Nurse:
     if n is None or n.ward_id != m.ward_id:
         raise not_found("NURSE_NOT_FOUND")
     return n
+
+
+def charges(db: Session, user_id: uuid.UUID) -> list[dict]:
+    m = members.require_head(db, user_id)
+    return [view(n, True) for n in db.scalars(select(Nurse).where(
+        Nurse.ward_id == m.ward_id, Nurse.duty_role == DutyRole.CHARGE,
+        Nurse.status != NurseStatus.RETIRED).order_by(Nurse.name, Nurse.id))]
+
+
+def set_charge(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, is_charge: bool, version: int) -> dict:
+    m = members.require_head(db, user_id)
+    n = _get(db, m, nurse_id)
+    duty_role = DutyRole.CHARGE if is_charge else (DutyRole.GENERAL if n.duty_role == DutyRole.CHARGE else n.duty_role)
+    return patch(db, user_id, nurse_id, {"duty_role": duty_role}, version)

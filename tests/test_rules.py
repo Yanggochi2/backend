@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, timedelta
 
 from app.domain.generator import generate
@@ -21,7 +22,9 @@ def day(n):
 
 
 def test_detects_hard_violations():
-    rules = Rules(0, 0, 0, 1, 31, True)
+    rules = Rules.preset(Preset.STANDARD, 0, 0, 0)
+    rules.settings["MAX_CONSECUTIVE_NIGHTS"] = replace(rules.settings["MAX_CONSECUTIVE_NIGHTS"], parameters={"max": 1})
+    rules.settings["MAX_CONSECUTIVE_WORK"] = replace(rules.settings["MAX_CONSECUTIVE_WORK"], parameters={"max": 31})
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님

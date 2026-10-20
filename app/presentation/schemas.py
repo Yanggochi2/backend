@@ -4,7 +4,7 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StringConstraints, field_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.domain.model import Duty, DutyRole, NurseStatus, Preset, RequestType, Severity
@@ -112,9 +112,9 @@ class RulePatch(Body):
 
 
 class HolidayPut(Body):
-    is_holiday: bool
-    name: str | None = None
-    reason: str | None = None
+    is_holiday: StrictBool
+    name: str | None = Field(None, max_length=100)
+    reason: str | None = Field(None, max_length=500)
 
 
 class OffTargetPatch(Body):
@@ -196,3 +196,16 @@ class NotificationSettingsPatch(Body):
     request_result: bool | None = None
     duty_reminder: bool | None = None
     web_push: bool | None = None
+
+
+class ChargePut(Body):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    is_charge: StrictBool
+    version: StrictInt = Field(ge=1)
+
+
+class OffDeadlinePut(Body):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+    closes_at: AwareDatetime | None
+    manually_closed: StrictBool = False
+    version: StrictInt = Field(ge=0)

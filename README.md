@@ -38,7 +38,7 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 - `app/presentation` 라우트·요청 검증(schemas)·인증 쿠키·CSRF·Idempotency-Key·요청 단위 트랜잭션
 - `app/business` 서비스 (권한·병동 범위 검증, 감사 로그, 알림, 엑셀, 자동 생성 작업)
 - `app/persistence` SQLAlchemy 모델 (모든 식별자 UUID)
-- `app/domain` 순수 규칙: `validator`(SCH-05 위반 검출), `generator`(GEN-01 자동 편성). FastAPI·DB에 의존하지 않는다
+- `app/domain` 순수 규칙: `rule_catalog`(규칙 기본값·파라미터 검증), `rule_engine`(배정 규칙, 생성기·검증기 공용), `validator`(SCH-05 위반 검출), `generator`(GEN-01 자동 편성). FastAPI·DB에 의존하지 않는다
 
 ## API 계약 — 병동 근무표 서비스 API 명세서 v1.0
 기본 경로 `/api/v1`, 59개 엔드포인트. 전체 목록은 서버 실행 후 `/docs`.
@@ -103,3 +103,9 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 - 미구현: 소셜 로그인, 웹 푸시(#27), 비동기 생성 작업 큐(#25). 테이블은 시작 시 자동 생성 — 운영 전 Alembic 도입(#24). **스키마가 바뀌었으므로 기존 `nurs-local.db`는 지우고 다시 띄울 것**
 - 🔶 가정: 단일 병동 소속, 간호사 중복 판정 = 같은 이름 + 같은 입사일
 - 역할(role) 변경은 권한 부여·이관(AUTH-07)으로만 가능 — 간호사 수정 API에 role을 보내면 400
+
+## 규칙·공휴일·간호사·차지·오프 마감
+
+[API 계약과 규칙 엔진 구조](docs/management-api.md)를 참고하세요.
+규칙 카탈로그의 파라미터를 생성기·검증기가 함께 사용하며, 월별 희망 오프 접수 마감과
+차지 지정·해제를 별도 API로 관리합니다. 변경 요청은 인증 쿠키와 CSRF 헤더가 필요합니다.
