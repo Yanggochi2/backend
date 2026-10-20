@@ -11,6 +11,10 @@ def test_rules_patch_and_preset():
     err(h("PATCH", f"/wards/me/rules/{by['PREGNANT_NIGHT']['id']}", {"enabled": False}), 409, "RULE_CONFLICT")
     err(h("PATCH", f"/wards/me/rules/{by['MAX_CONSECUTIVE_NIGHTS']['id']}", {"parameters": {"max": 0}}),
         400, "INVALID_RULE_VALUE")
+    err(h("PATCH", f"/wards/me/rules/{by['MAX_CONSECUTIVE_NIGHTS']['id']}", {"parameters": {"max": True}}),
+        400, "INVALID_RULE_VALUE")
+    # enabled: null은 생략과 같다 (DB NOT NULL 컬럼에 None이 들어가 500이 나지 않게)
+    assert h.data("PATCH", f"/wards/me/rules/{by['NIGHT_TO_DAY']['id']}", {"enabled": None})["rule"]["enabled"]
     rid = by["MAX_CONSECUTIVE_NIGHTS"]["id"]
     r = h.data("PATCH", f"/wards/me/rules/{rid}", {"parameters": {"max": 4}, "reason": "인력", "version": 1})
     assert r["rule"]["parameters"] == {"max": 4} and r["violationSummary"] == []
