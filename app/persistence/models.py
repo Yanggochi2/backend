@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime
 from typing import Annotated
 
-from sqlalchemy import JSON, Enum, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import JSON, Enum, ForeignKey, Index, String, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.model import (AccountStatus, Duty, DutyRole, GenerationStatus, NotificationType, NurseInfo,
@@ -55,6 +55,8 @@ class Ward(Base):
     code: Mapped[str] = mapped_column(String(8), unique=True)
     code_issued_at: Mapped[datetime] = mapped_column(default=now)
     created_at: Mapped[datetime] = mapped_column(default=now)
+    version: Mapped[int] = mapped_column(default=0)
+    __mapper_args__ = {"version_id_col": version}
 
 
 class WardRule(Base):
@@ -94,6 +96,10 @@ class Nurse(Base):
     역할(role)은 병동 소속의 속성
     """
     __tablename__ = "nurses"
+    # 계정당 재직 소속 1개. 개설·승인의 "소속 확인 후 insert" 경쟁을 DB가 막는다 (위반 시 409)
+    _active = text("user_id IS NOT NULL AND status <> 'RETIRED'")
+    __table_args__ = (Index("uq_nurses_active_user", "user_id", unique=True,
+                            postgresql_where=_active, sqlite_where=_active),)
     id: Mapped[PK]
     ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), index=True)
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)
