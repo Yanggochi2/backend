@@ -64,7 +64,8 @@ class ApproveMembership(Body):
 
 
 class Reason(Body):
-    reason: str | None = None
+    # 알림 body String(500)에 "{병동명(≤100)} 가입이 반려되었습니다. 사유: "와 함께 들어가므로 300자로 제한
+    reason: Annotated[str, StringConstraints(max_length=300)] | None = None
 
 
 class Transfer(Body):
