@@ -27,7 +27,7 @@ class TxRoute(APIRoute):
     """
     요청마다 DB 세션을 열고, 엔드포인트가 끝나면 응답을 보내기 전에 커밋한다 (오류 시 롤백).
     커밋 단계의 unique 위반·버전 충돌도 409로 응답할 수 있게 하기 위함.
-    상태 변경 요청은 X-CSRF-Token 헤더 = CSRF_TOKEN 쿠키 (double submit)를 요구한다.
+    상태 변경 요청은 X-CSRF-Token 헤더가 요청 쿠키의 세션이 발급한 CSRF 토큰이어야 한다.
     POST에 Idempotency-Key가 있으면 같은 사용자·키·요청에 저장된 2xx 응답을 그대로 돌려준다
     """
 
@@ -36,13 +36,12 @@ class TxRoute(APIRoute):
         csrf_required = self.path not in CSRF_EXEMPT
 
         async def tx(request: Request) -> Response:
-            if request.method in ("POST", "PUT", "PATCH", "DELETE") and csrf_required:
-                token = request.cookies.get(CSRF)
-                if not token or request.headers.get("X-CSRF-Token") != token:
-                    raise ApiException(403, "CSRF_TOKEN_INVALID", "CSRF 토큰이 없거나 일치하지 않습니다")
             db = SessionLocal()
             request.state.db = db
             try:
+                if request.method in ("POST", "PUT", "PATCH", "DELETE") and csrf_required:
+                    await run_in_threadpool(auth.verify_csrf, db, request.cookies.get(ACCESS),
+                                            request.cookies.get(REFRESH), request.headers.get("X-CSRF-Token"))
                 idem = None
                 if request.method == "POST" and (key := request.headers.get("Idempotency-Key")):
                     body = await request.body()

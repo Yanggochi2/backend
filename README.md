@@ -45,8 +45,8 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 
 - **응답**: 단일 `{"data": {...}}`, 목록 `{"data": [...], "meta": {page, size, totalElements, totalPages}}`, 204는 본문 없음
 - **오류**: `{"error": {code, message, traceId, status, timestamp, fieldErrors?, details?}}`. 응답 헤더 `X-Trace-Id`도 같은 값
-- **인증**: 로그인 시 `ACCESS_TOKEN`(30분)·`REFRESH_TOKEN`(14일, Path=/api/v1/auth)·`CSRF_TOKEN` 쿠키. 토큰은 DB에 해시만 저장. `POST /auth/refresh`는 토큰 쌍을 회전
-- **CSRF**: signup·login을 제외한 POST/PUT/PATCH/DELETE는 `X-CSRF-Token` 헤더 = `CSRF_TOKEN` 쿠키
+- **인증**: 가입·로그인 시 `ACCESS_TOKEN`(30분)·`REFRESH_TOKEN`(14일, Path=/api/v1/auth)·`CSRF_TOKEN` 쿠키. 토큰은 DB에 해시만 저장. `POST /auth/refresh`는 토큰을 회전하고, 이미 회전된 리프레시 토큰이 다시 오면 그 로그인 계열 세션을 모두 폐기. `POST /auth/logout`은 액세스가 만료돼도 리프레시 쿠키로 동작. 가입은 클라이언트 IP별 시간당 20회 (리버스 프록시 뒤라면 uvicorn `--proxy-headers` 필요)
+- **CSRF**: signup·login을 제외한 POST/PUT/PATCH/DELETE는 `X-CSRF-Token` 헤더에 `CSRF_TOKEN` 쿠키 값을 실어야 하며, 서버는 그 값이 요청 쿠키의 세션이 발급한 것인지 확인
 - **병동 범위**: 경로는 `/wards/me/...`. 다른 병동 리소스·초안 근무표(일반 간호사)는 404, 역할 부족은 403
 - **멱등성**: 모든 POST가 `Idempotency-Key`를 지원 (사용자별, 24시간). 같은 키·같은 요청은 저장된 2xx 응답 + `Idempotent-Replayed: true`, 다른 요청이면 422 `IDEMPOTENCY_KEY_REUSED`
 - **동시성**: 근무표 변경은 `baseVersion` 불일치 시 409 `VERSION_CONFLICT`. 활성 편집 잠금이 있으면 `X-Schedule-Lock-Token`이 없거나 틀릴 때 423 `SCHEDULE_LOCKED`. 잠금이 없으면 baseVersion만으로 충돌을 막는다. 잠금 획득·해제는 근무표 version을 올리지 않는다
