@@ -69,7 +69,9 @@ def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_ver
     changed = apply_changes(db, s, changes)
     audit.log(db, m.ward_id, user_id, "SCHEDULE_CELLS_CHANGED", "SCHEDULE", s.id, None, f"{changed} cells")
     r = roster(db, s)
-    return {"version": s.version, "changedCells": changed, "coverage": _coverage(r), "violations": check(db, s, r)}
+    vs = check(db, s, r)
+    return {"version": s.version, "changedCells": changed, "coverage": _coverage(r), "violations": vs,
+            "readiness": _readiness(db, s, vs)}
 
 
 def apply_changes(db: Session, s: Schedule, changes: list[tuple[uuid.UUID, date, Duty | None]]) -> int:
@@ -241,6 +243,7 @@ def editable(db: Session, s: Schedule, m: Member, lock_token: str | None, base_v
     근무표 변경 공통 전제: DRAFT, 잠금(활성 잠금이 있으면 그 토큰 필요), baseVersion 일치.
     잠금이 없으면 baseVersion만으로 충돌을 막는다
     """
+    db.refresh(s, with_for_update=True)  # 잠금 획득·인수와 직렬화: 오래된 잠금 상태로 판단하지 않게
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 편집할 수 있습니다. 현재: {s.status}")
     if _lock_active(s):
@@ -322,6 +325,28 @@ def sync_leave(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, dates: list
     return {"scheduleId": s.id, "yearMonth": s.year_month, "version": s.version, "changedCells": changed}
 
 
+def clear_after(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> tuple[list[str], list[str]]:
+    """
+    탈퇴한 간호사의 소속 종료일 이후 셀 정리. 초안은 지우고(version 증가), 확정본은 바꾸지 않는다.
+    (지운 초안 월, 수간호사가 확인해야 할 확정본 월)을 돌려준다
+    """
+    cleared, confirmed = [], []
+    for s in db.scalars(select(Schedule).where(Schedule.ward_id == ward_id,
+                                               Schedule.status.in_([ScheduleStatus.DRAFT, ScheduleStatus.CONFIRMED]))
+                        .order_by(Schedule.year_month)):
+        after = [a for a in _assignments(db, s.id) if a.nurse_id == nurse_id and a.date > end]
+        if not after:
+            continue
+        if s.status == ScheduleStatus.CONFIRMED:
+            confirmed.append(s.year_month)
+            continue
+        for a in after:
+            db.delete(a)
+        touch(db, s)
+        cleared.append(s.year_month)
+    return cleared, confirmed
+
+
 def is_confirmed(db: Session, ward_id: uuid.UUID, d: date, lock: bool = False) -> bool:
     """확정·보관된 월인지. lock이면 확정(confirm)과 직렬화되도록 근무표 행을 잠근다"""
     s = by_month(db, ward_id, d.replace(day=1), lock)
@@ -371,7 +396,7 @@ def view(db: Session, s: Schedule, m: Member) -> dict:
             "holidays": [d.isoformat() for d in sorted(holidays)],
             "confirmation": _confirmation(db, s),
             "lock": lock_view(db, s) if m.is_head else None,
-            "readiness": _readiness(db, s, r) if m.is_head else None}
+            "readiness": _readiness(db, s, check(db, s, r)) if m.is_head else None}
 
 
 def find(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
@@ -421,6 +446,7 @@ def _visible(s: Schedule | None, m: Member) -> Schedule:
 
 def _draft(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
     s = find(db, m, schedule_id)
+    db.refresh(s, with_for_update=True)  # 잠금 판단과 기록을 원자적으로 (동시 획득 시 한쪽만 성공)
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 가능합니다. 현재: {s.status}")
     return s
@@ -462,9 +488,8 @@ def _confirmation(db: Session, s: Schedule) -> dict | None:
             "cancelReason": s.cancel_reason, "confirmCount": s.confirm_count}
 
 
-def _readiness(db: Session, s: Schedule, r: Roster) -> dict:
+def _readiness(db: Session, s: Schedule, vs: list[dict]) -> dict:
     """확정 버튼 활성 판단용. confirmable = 초안 + 하드 위반 0 + 대기 신청 0 (소프트 위반은 확인 후 확정)"""
-    vs = check(db, s, r)
     hard = sum(1 for v in vs if v["severity"] == Severity.HARD)
     pending = len(pending_requests(db, s))
     return {"hardViolations": hard, "softViolations": len(vs) - hard, "pendingRequests": pending,
@@ -483,6 +508,12 @@ def _off_target(db: Session, s: Schedule) -> int:
     if s.off_target is not None:
         return s.off_target
     return len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month))) + 1
+
+
+def release_locks(db: Session, ward_id: uuid.UUID, user_id: uuid.UUID) -> None:
+    """병동을 떠난 계정이 쥐고 있던 편집 잠금을 푼다"""
+    for s in db.scalars(select(Schedule).where(Schedule.ward_id == ward_id, Schedule.locked_by == user_id)):
+        _unlock(s)
 
 
 def _grant_lock(db: Session, s: Schedule, user_id: uuid.UUID) -> dict:
