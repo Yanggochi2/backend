@@ -90,6 +90,7 @@ def _join_by_invite(db: Session, user_id: uuid.UUID, code: str) -> dict:
     # 다른 병동에 걸어 둔 가입 신청은 의미가 없어지므로 취소한다 (나중에 승인되면 두 병동 소속이 됨)
     if p := _pending(db, user_id):
         p.status, p.processed_at = RequestStatus.CANCELLED, now()
+        audit.log(db, p.ward_id, user_id, "MEMBERSHIP_CANCELLED", "MEMBERSHIP_REQUEST", p.id, None, "JOINED_BY_INVITE")
     n.user_id, n.invite_code, n.invite_expires_at = user_id, None, None
     j = MembershipRequest(ward_id=n.ward_id, user_id=user_id, status=RequestStatus.APPROVED, via="INVITE_CODE",
                           processed_at=now())
