@@ -135,3 +135,37 @@ def test_applicant_can_cancel_pending_request():
     assert wrong("GET", "/wards/me/membership-requests?status=PENDING").json()["meta"]["totalElements"] == 0
     err(n("DELETE", "/ward-membership-requests/me"), 404, "REQUEST_NOT_FOUND")
     n.data("POST", "/ward-membership-requests", {"joinCode": right.data("GET", "/wards/me/join-code")["code"]})
+
+
+def test_unlink_wrongly_linked_account():
+    """초대 코드가 다른 사람에게 넘어간 경우: 계정만 떼고 행은 유지, 새 코드로 올바른 사람을 연결"""
+    h = ward_head()
+    [kim] = add_nurses(h, 1, "김간호")
+    wrong = user("다른사람")
+    wrong.data("POST", "/ward-membership-requests", {"joinCode": h.data("POST", f"/wards/me/nurses/{kim}/invite-code")["code"]})
+    pending = wrong.data("POST", "/wards/me/requests", {"type": "PREFERRED_OFF", "targetDates": [NEXT.isoformat()],
+                                                         "reasonCode": "PERSONAL"})
+
+    err(h("POST", f"/wards/me/nurses/{kim}/unlink-account", {}), 400, "REASON_REQUIRED")
+    v = h.data("POST", f"/wards/me/nurses/{kim}/unlink-account", {"reason": "다른 사람이 코드를 사용함"})
+    assert v["id"] == kim and v["hasAccount"] is False and v["status"] == "ACTIVE", "행은 재직 상태로 유지"
+    assert wrong.data("GET", "/me")["membership"] is None, "해제된 계정은 병동 소속이 아님"
+    assert any(x["type"] == "MEMBER_UNLINKED" for x in wrong("GET", "/me/notifications").json()["data"])
+    assert h.data("GET", f"/wards/me/requests/{pending['id']}")["status"] == "CANCELLED", "그 계정이 낸 대기 신청 취소"
+    err(h("POST", f"/wards/me/nurses/{kim}/unlink-account", {"reason": "x"}), 409, "NURSE_NOT_LINKED")
+
+    right = user("김간호")
+    right.data("POST", "/ward-membership-requests", {"joinCode": h.data("POST", f"/wards/me/nurses/{kim}/invite-code")["code"]})
+    assert right.data("GET", "/me")["membership"]["id"] == kim, "새 코드로 올바른 사람을 같은 행에 연결"
+
+
+def test_unlink_rules():
+    h = ward_head()
+    n, nid = member(h)
+    hid = h.data("GET", "/me")["membership"]["id"]
+    err(h("POST", f"/wards/me/nurses/{hid}/unlink-account", {"reason": "x"}), 409, "CANNOT_UNLINK_SELF")
+    err(n("POST", f"/wards/me/nurses/{hid}/unlink-account", {"reason": "x"}), 403, "FORBIDDEN")
+    err(ward_head()("POST", f"/wards/me/nurses/{nid}/unlink-account", {"reason": "x"}), 404, "NURSE_NOT_FOUND")
+    # 수간호사였던 계정을 해제하면 권한도 남지 않는다
+    h.data("POST", f"/wards/me/head-nurses/{nid}/grant")
+    assert h.data("POST", f"/wards/me/nurses/{nid}/unlink-account", {"reason": "x"})["role"] == "NURSE"

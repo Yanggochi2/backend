@@ -124,6 +124,15 @@ def withdraw_all(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date
     return n
 
 
+def cancel_pending(db: Session, nurse_id: uuid.UUID) -> int:
+    """계정 연결 해제 시: 그 계정이 낸 대기 중인 신청을 취소한다 (승인된 신청은 수간호사가 판단한 것이라 둔다)"""
+    rows = db.scalars(select(WorkRequest).where(WorkRequest.nurse_id == nurse_id,
+                                                WorkRequest.status == RequestStatus.PENDING)).all()
+    for r in rows:
+        r.status = RequestStatus.CANCELLED
+    return len(rows)
+
+
 def mine(db: Session, user_id: uuid.UUID, ym: str | None, type_: RequestType | None, status: RequestStatus | None,
          page_no: int, size: int) -> dict:
     m = members.require(db, user_id)
