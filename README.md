@@ -47,6 +47,21 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 - **멱등성**: 모든 POST가 `Idempotency-Key`를 지원 (사용자별, 24시간). 같은 키·같은 요청은 저장된 2xx 응답 + `Idempotent-Replayed: true`, 다른 요청이면 422 `IDEMPOTENCY_KEY_REUSED`
 - **동시성**: 근무표 변경은 `baseVersion` 불일치 시 409 `VERSION_CONFLICT`. 활성 편집 잠금이 있으면 `X-Schedule-Lock-Token`이 없거나 틀릴 때 423 `SCHEDULE_LOCKED`. 잠금이 없으면 baseVersion만으로 충돌을 막는다. 잠금 획득·해제는 근무표 version을 올리지 않는다
 
+## 명세서 v1.0 이후 추가된 API
+명세서 개정 시 반영 필요.
+
+| Method | Path | 권한 | 설명 |
+|---|---|---|---|
+| POST | /wards/me/nurses/{nurseId}/invite-code | HEAD_NURSE | 계정 없이 등록한 간호사에게 개인 초대 코드(10자, 7일, 1회용) 발급. 재발급 시 이전 코드 무효. 연결된 간호사 409 `NURSE_ALREADY_LINKED` |
+| DELETE | /wards/me/nurses/{nurseId}/invite-code | HEAD_NURSE | 발급한 초대 코드 취소. 유효한 코드가 없으면 404 `INVITE_CODE_NOT_FOUND` |
+| DELETE | /ward-membership-requests/me | 로그인 | 대기 중인 내 가입 신청 취소. 없으면 404 `REQUEST_NOT_FOUND` |
+
+- `POST /ward-membership-requests`의 `joinCode`에 **개인 초대 코드**를 넣으면 승인 없이 그 간호사 행에 계정이 연결된다 (응답 `status: APPROVED`, `via: INVITE_CODE`). 병동 공용 코드(8자)는 지금처럼 승인 대기. 만료 코드 422 `INVITE_CODE_EXPIRED`
+- 간호사 응답에 `inviteExpiresAt`(수간호사만, 발급된 코드가 있을 때)
+- 초대 코드로 가입하면 수간호사 전원에게 `MEMBER_JOINED` 알림 (계정 이름이 다르면 확인 요청)
+- 승인 시 `nurseId` 연결: 유효한 초대 코드가 나간 행은 후보(`candidates`)에서 빠지고, 연결하면 409 `INVITE_CODE_OUTSTANDING`
+- 가입·초대 전체 흐름과 규칙: [docs/membership.md](docs/membership.md)
+
 ## 🔶 결정 필요 항목에 대한 현재 구현
 
 | API | 선택한 동작 |
