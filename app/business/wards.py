@@ -11,7 +11,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.business import audit, members, notifications, nurses, requests, rules, schedules
-from app.business.common import (RateLimiter, conflict, iso, not_found, page, require_reason, today_kst,
+from app.business.common import (RateLimiter, conflict, forbidden, iso, not_found, page, require_reason, today_kst,
                                  unprocessable)
 from app.domain.model import NotificationType, NurseStatus, Preset, RequestStatus, Role
 from app.persistence.db import now
@@ -88,7 +88,7 @@ def _join_by_invite(db: Session, user_id: uuid.UUID, code: str) -> dict:
     if n.invite_expires_at < now():
         raise unprocessable("INVITE_CODE_EXPIRED", "만료된 초대 코드입니다. 수간호사에게 재발급을 요청하세요")
     # 다른 병동에 걸어 둔 가입 신청은 의미가 없어지므로 취소한다 (나중에 승인되면 두 병동 소속이 됨)
-    cancel_pending(db, user_id)
+    cancel_pending(db, user_id, "JOINED_BY_INVITE")
     n.user_id, n.invite_code, n.invite_expires_at = user_id, None, None
     j = MembershipRequest(ward_id=n.ward_id, user_id=user_id, status=RequestStatus.APPROVED, via="INVITE_CODE",
                           processed_at=now())
@@ -288,10 +288,11 @@ def leave(db: Session, user_id: uuid.UUID, why: str = "병동 탈퇴") -> None:
     _notify_heads(db, m.ward_id, NotificationType.MEMBER_LEFT, "간호사 탈퇴", body, n.id)
 
 
-def cancel_pending(db: Session, user_id: uuid.UUID) -> None:
+def cancel_pending(db: Session, user_id: uuid.UUID, reason: str) -> None:
     for j in db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id,
                                                         MembershipRequest.status == RequestStatus.PENDING)):
         j.status, j.processed_at = RequestStatus.CANCELLED, now()
+        audit.log(db, j.ward_id, user_id, "MEMBERSHIP_CANCELLED", "MEMBERSHIP_REQUEST", j.id, None, reason)
 
 
 def unlink_account(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, reason: str | None) -> dict:
@@ -301,7 +302,12 @@ def unlink_account(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, reason:
     """
     reason = require_reason(reason)
     m = members.require_head(db, user_id)
-    n = db.get(Nurse, nurse_id)
+    # 수간호사 둘이 서로를 동시에 해제해 0명이 되지 않게: 병동 행을 잠근 뒤 내 권한을 다시 읽는다
+    db.get(Ward, m.ward_id, with_for_update=True)
+    me = db.get(Nurse, m.nurse_id, populate_existing=True)
+    if me.user_id != user_id or me.role != Role.HEAD_NURSE:
+        raise forbidden("수간호사 권한이 필요합니다")
+    n = db.get(Nurse, nurse_id, populate_existing=True)
     if n is None or n.ward_id != m.ward_id:
         raise not_found("NURSE_NOT_FOUND")
     if n.id == m.nurse_id:
@@ -316,7 +322,7 @@ def unlink_account(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, reason:
     db.flush()
     cancelled = requests.cancel_pending(db, n.id)
     schedules.release_locks(db, m.ward_id, account.id)
-    audit.log(db, m.ward_id, user_id, "MEMBER_UNLINKED", "NURSE", n.id, f"account={account.name} role={before_role}",
+    audit.log(db, m.ward_id, user_id, "MEMBER_UNLINKED", "NURSE", n.id, f"account={account.id} name={account.name} role={before_role}",
               f"reason={reason} cancelledRequests={cancelled}")
     w = db.get(Ward, m.ward_id)
     notifications.notify_user(db, account.id, NotificationType.MEMBER_UNLINKED, "병동 계정 연결 해제",

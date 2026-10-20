@@ -18,7 +18,10 @@ services:
   api:
     build: .
     environment:
-      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-nurs}:${POSTGRES_PASSWORD:-nurs}@postgres:5432/${POSTGRES_DB:-nurs}
+      # DB 접속 정보는 URL로 합치지 않고 따로 넘긴다 (app/persistence/db.py에서 URL.create로 조립)
+      POSTGRES_DB: ${POSTGRES_DB:-nurs}
+      POSTGRES_USER: ${POSTGRES_USER:-nurs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nurs}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}  # 로컬 http. HTTPS 배포에서는 true
       REMINDER_EVERY_SECONDS: ${REMINDER_EVERY_SECONDS:-}
     ports:
