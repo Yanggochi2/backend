@@ -99,6 +99,16 @@ def apply_changes(db: Session, s: Schedule, changes: list[tuple[uuid.UUID, date,
     return changed
 
 
+def replace_cells(db: Session, s: Schedule, cells: Cells) -> None:
+    """자동 생성 결과 반영: 셀 전체 교체"""
+    for a in _assignments(db, s.id):
+        db.delete(a)
+    db.flush()
+    db.add_all(Assignment(schedule_id=s.id, nurse_id=nurse_id, date=d, duty=duty)
+               for nurse_id, row in cells.items() for d, duty in row.items())
+    touch(db, s)
+
+
 def violations(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, severity: Severity | None,
                nurse_id: uuid.UUID | None, rule_id: uuid.UUID | None, page_no: int, size: int) -> dict:
     m = members.require_head(db, user_id)
