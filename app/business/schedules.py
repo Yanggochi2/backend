@@ -128,6 +128,7 @@ def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledge
     """SCH-07. 대기 신청 0 · 하드 위반 0 · 모든 소프트 위반 확인(acknowledged)이어야 확정"""
     m = members.require_head(db, user_id)
     s = find(db, m, schedule_id)
+    db.refresh(s, with_for_update=True)  # 신청 생성(requests.create)과 직렬화: 확정 직전 들어온 신청을 놓치지 않게
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 확정할 수 있습니다. 현재: {s.status}")
     if _lock_active(s) and s.locked_by != user_id:
@@ -240,6 +241,7 @@ def editable(db: Session, s: Schedule, m: Member, lock_token: str | None, base_v
     근무표 변경 공통 전제: DRAFT, 잠금(활성 잠금이 있으면 그 토큰 필요), baseVersion 일치.
     잠금이 없으면 baseVersion만으로 충돌을 막는다
     """
+    db.refresh(s, with_for_update=True)  # 잠금 획득·인수와 직렬화: 오래된 잠금 상태로 판단하지 않게
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 편집할 수 있습니다. 현재: {s.status}")
     if _lock_active(s):
@@ -343,9 +345,9 @@ def clear_after(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date)
     return cleared, confirmed
 
 
-def is_confirmed(db: Session, ward_id: uuid.UUID, d: date) -> bool:
-    """확정·보관된 월인지"""
-    s = by_month(db, ward_id, d.replace(day=1))
+def is_confirmed(db: Session, ward_id: uuid.UUID, d: date, lock: bool = False) -> bool:
+    """확정·보관된 월인지. lock이면 확정(confirm)과 직렬화되도록 근무표 행을 잠근다"""
+    s = by_month(db, ward_id, d.replace(day=1), lock)
     return s is not None and s.status in VISIBLE_TO_NURSES
 
 
@@ -403,9 +405,9 @@ def find(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
     return _visible(s, m)
 
 
-def by_month(db: Session, ward_id: uuid.UUID, first: date) -> Schedule | None:
-    return db.scalar(select(Schedule).where(Schedule.ward_id == ward_id,
-                                            Schedule.year_month == first.strftime("%Y-%m")))
+def by_month(db: Session, ward_id: uuid.UUID, first: date, lock: bool = False) -> Schedule | None:
+    q = select(Schedule).where(Schedule.ward_id == ward_id, Schedule.year_month == first.strftime("%Y-%m"))
+    return db.scalar(q.with_for_update() if lock else q)
 
 
 def touch(db: Session, s: Schedule) -> None:
@@ -442,6 +444,7 @@ def _visible(s: Schedule | None, m: Member) -> Schedule:
 
 def _draft(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
     s = find(db, m, schedule_id)
+    db.refresh(s, with_for_update=True)  # 잠금 판단과 기록을 원자적으로 (동시 획득 시 한쪽만 성공)
     if s.status != ScheduleStatus.DRAFT:
         raise conflict("INVALID_SCHEDULE_STATE", f"초안 상태에서만 가능합니다. 현재: {s.status}")
     return s
