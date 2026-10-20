@@ -23,3 +23,28 @@ def test_notifications_and_settings():
     assert n.data("PATCH", "/me/notification-settings", {"scheduleCancelled": False})["scheduleCancelled"] is False
     h.data("POST", f"/wards/me/schedules/{s['id']}/confirmation-cancellations", {"reason": "수정"})
     assert "SCHEDULE_CANCELLED" not in [x["type"] for x in n.data("GET", "/me/notifications")], "끈 종류는 안 받음"
+
+
+def test_remind_tomorrow_skips_nurses_without_account():
+    import uuid
+    from datetime import timedelta
+
+    from app.business.common import today_kst
+    from app.business.notifications import remind_tomorrow
+    from app.domain.model import Duty, ScheduleStatus
+    from app.persistence.db import SessionLocal
+    from app.persistence.models import Assignment, Nurse, Schedule
+    h = ward_head()
+    (no_account,) = add_nurses(h, 1)
+    head = uuid.UUID(h.data("GET", "/me")["membership"]["id"])
+    tomorrow = today_kst() + timedelta(days=1)
+    with SessionLocal() as db:
+        s = Schedule(ward_id=db.get(Nurse, head).ward_id, year_month=tomorrow.strftime("%Y-%m"),
+                     status=ScheduleStatus.CONFIRMED)
+        db.add(s)
+        db.flush()
+        db.add_all([Assignment(schedule_id=s.id, nurse_id=head, date=tomorrow, duty=Duty.D),
+                    Assignment(schedule_id=s.id, nurse_id=uuid.UUID(no_account), date=tomorrow, duty=Duty.E)])
+        remind_tomorrow(db)
+        db.commit()
+    assert "DUTY_REMINDER" in [x["type"] for x in h.data("GET", "/me/notifications")]
