@@ -26,7 +26,7 @@ ROSTER = [("정차지", DutyRole.CHARGE, 120), ("강프리", DutyRole.PRECEPTOR,
 def _user(db, name: str, email: str) -> User:
     u = db.scalar(select(User).where(User.email == email))
     if u is None:
-        auth.signup(db, name, email, PASSWORD)
+        auth.signup(db, name, email, PASSWORD, "seed")  # client는 가입 시도 제한 키
         u = db.scalar(select(User).where(User.email == email))
     return u
 
