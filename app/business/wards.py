@@ -88,7 +88,7 @@ def _join_by_invite(db: Session, user_id: uuid.UUID, code: str) -> dict:
     if n.invite_expires_at < now():
         raise unprocessable("INVITE_CODE_EXPIRED", "만료된 초대 코드입니다. 수간호사에게 재발급을 요청하세요")
     # 다른 병동에 걸어 둔 가입 신청은 의미가 없어지므로 취소한다 (나중에 승인되면 두 병동 소속이 됨)
-    cancel_pending(db, user_id)
+    cancel_pending(db, user_id, "JOINED_BY_INVITE")
     n.user_id, n.invite_code, n.invite_expires_at = user_id, None, None
     j = MembershipRequest(ward_id=n.ward_id, user_id=user_id, status=RequestStatus.APPROVED, via="INVITE_CODE",
                           processed_at=now())
@@ -280,10 +280,11 @@ def leave(db: Session, user_id: uuid.UUID, why: str = "병동 탈퇴") -> None:
     _notify_heads(db, m.ward_id, NotificationType.MEMBER_LEFT, "간호사 탈퇴", body, n.id)
 
 
-def cancel_pending(db: Session, user_id: uuid.UUID) -> None:
+def cancel_pending(db: Session, user_id: uuid.UUID, reason: str) -> None:
     for j in db.scalars(select(MembershipRequest).where(MembershipRequest.user_id == user_id,
                                                         MembershipRequest.status == RequestStatus.PENDING)):
         j.status, j.processed_at = RequestStatus.CANCELLED, now()
+        audit.log(db, j.ward_id, user_id, "MEMBERSHIP_CANCELLED", "MEMBERSHIP_REQUEST", j.id, None, reason)
 
 
 def _notify_heads(db: Session, ward_id: uuid.UUID, type_: NotificationType, title: str, body: str,

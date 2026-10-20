@@ -82,7 +82,7 @@ def withdraw(db: Session, user_id: uuid.UUID, password: str) -> None:
     ward_id = _ward_of(db, user_id)
     if ward_id:
         wards.leave(db, user_id, "계정 탈퇴")
-    wards.cancel_pending(db, user_id)
+    wards.cancel_pending(db, user_id, "ACCOUNT_DELETED")
     for model in (SessionToken, Notification, IdempotencyRecord):
         db.execute(delete(model).where(model.user_id == user_id))
     u.email, u.name = f"deleted-{u.id}@deleted.invalid", "탈퇴한 사용자"
