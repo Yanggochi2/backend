@@ -17,6 +17,7 @@ ACCESS_TTL = timedelta(minutes=30)
 REFRESH_TTL = timedelta(days=14)  # 🔶 권장값
 # 이메일별 로그인 실패 15분에 5회까지. 성공하면 초기화
 _login_failures = RateLimiter(5, timedelta(minutes=15))
+_withdraw_failures = RateLimiter(5, timedelta(minutes=15))  # 탈취한 세션으로 비밀번호를 대입하지 못하게
 
 
 def signup(db: Session, name: str, email: str, password: str) -> dict:
@@ -73,13 +74,15 @@ def withdraw(db: Session, user_id: uuid.UUID, password: str) -> None:
     계정 탈퇴. 소속이 있으면 병동 탈퇴를 먼저 하고(마지막 수간호사면 409), 세션·알림·멱등 응답을 지운 뒤
     계정 정보를 익명화한다. 지난 근무표의 이름은 간호사 행에 기록으로 남는다. 같은 이메일로 다시 가입할 수 있다
     """
+    _withdraw_failures.check(user_id)
     u = db.get(User, user_id)
     if not bcrypt.checkpw(password.encode(), u.password_hash.encode()):
+        _withdraw_failures.record(user_id)
         raise ApiException(401, "INVALID_CREDENTIALS", "비밀번호가 올바르지 않습니다")
     ward_id = _ward_of(db, user_id)
     if ward_id:
         wards.leave(db, user_id, "계정 탈퇴")
-    wards.cancel_pending(db, user_id)
+    wards.cancel_pending(db, user_id, "ACCOUNT_DELETED")
     for model in (SessionToken, Notification, IdempotencyRecord):
         db.execute(delete(model).where(model.user_id == user_id))
     u.email, u.name = f"deleted-{u.id}@deleted.invalid", "탈퇴한 사용자"

@@ -115,7 +115,11 @@ def withdraw_all(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date
             continue  # 이미 지난 연차·희망은 기록으로 남긴다
         if r.status == RequestStatus.APPROVED and r.type == RequestType.ANNUAL_LEAVE:
             schedules.sync_leave(db, ward_id, nurse_id, future, False)
-        r.status = RequestStatus.CANCELLED
+        past = [d.isoformat() for d in r.dates() if d <= end]
+        if r.status == RequestStatus.APPROVED and past:
+            r.target_dates = past  # 종료일까지 쓴 날짜는 승인 기록으로 남긴다
+        else:
+            r.status = RequestStatus.CANCELLED
         n += 1
     return n
 
