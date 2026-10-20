@@ -44,6 +44,10 @@ class Login(Body):
     password: NonBlank
 
 
+class Withdraw(Body):
+    password: NonBlank
+
+
 class CreateWard(Body):
     hospital_name: NonBlank
     ward_name: NonBlank
