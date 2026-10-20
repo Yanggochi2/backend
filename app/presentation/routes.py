@@ -35,10 +35,13 @@ def _utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None) if dt and dt.tzinfo else dt
 
 
-# --- 인증 (AUTH-01·02)
+# --- 인증 (AUTH-01·05)
 @api.post("/auth/signup", status_code=201)
-def signup(body: s.Signup, db: DB):
-    return _d(auth.signup(db, body.name, body.email, body.password))
+def signup(body: s.Signup, db: DB, request: Request, response: Response):
+    """가입과 동시에 로그인 쿠키를 발급한다"""
+    user, tokens = auth.signup(db, body.name, body.email, body.password, request.client.host if request.client else "")
+    set_auth_cookies(response, tokens)
+    return _d(user)
 
 
 @api.post("/auth/login")
@@ -56,8 +59,9 @@ def refresh(request: Request, db: DB, response: Response):
 
 
 @api.post("/auth/logout", status_code=204)
-def logout(user_id: UserId, db: DB, request: Request, response: Response):
-    auth.logout(db, user_id, request.cookies.get(ACCESS))
+def logout(db: DB, request: Request, response: Response):
+    """액세스가 만료돼도 리프레시 쿠키로 세션을 끝낼 수 있게 인증을 요구하지 않는다"""
+    auth.logout(db, request.cookies.get(ACCESS), request.cookies.get(REFRESH))
     clear_auth_cookies(response)
 
 

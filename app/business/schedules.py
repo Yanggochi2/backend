@@ -69,7 +69,9 @@ def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_ver
     changed = apply_changes(db, s, changes)
     audit.log(db, m.ward_id, user_id, "SCHEDULE_CELLS_CHANGED", "SCHEDULE", s.id, None, f"{changed} cells")
     r = roster(db, s)
-    return {"version": s.version, "changedCells": changed, "coverage": _coverage(r), "violations": check(db, s, r)}
+    vs = check(db, s, r)
+    return {"version": s.version, "changedCells": changed, "coverage": _coverage(r), "violations": vs,
+            "readiness": _readiness(db, s, vs)}
 
 
 def apply_changes(db: Session, s: Schedule, changes: list[tuple[uuid.UUID, date, Duty | None]]) -> int:
@@ -394,7 +396,7 @@ def view(db: Session, s: Schedule, m: Member) -> dict:
             "holidays": [d.isoformat() for d in sorted(holidays)],
             "confirmation": _confirmation(db, s),
             "lock": lock_view(db, s) if m.is_head else None,
-            "readiness": _readiness(db, s, r) if m.is_head else None}
+            "readiness": _readiness(db, s, check(db, s, r)) if m.is_head else None}
 
 
 def find(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
@@ -486,9 +488,8 @@ def _confirmation(db: Session, s: Schedule) -> dict | None:
             "cancelReason": s.cancel_reason, "confirmCount": s.confirm_count}
 
 
-def _readiness(db: Session, s: Schedule, r: Roster) -> dict:
+def _readiness(db: Session, s: Schedule, vs: list[dict]) -> dict:
     """확정 버튼 활성 판단용. confirmable = 초안 + 하드 위반 0 + 대기 신청 0 (소프트 위반은 확인 후 확정)"""
-    vs = check(db, s, r)
     hard = sum(1 for v in vs if v["severity"] == Severity.HARD)
     pending = len(pending_requests(db, s))
     return {"hardViolations": hard, "softViolations": len(vs) - hard, "pendingRequests": pending,

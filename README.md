@@ -18,6 +18,7 @@ docker compose up --build -d     # PostgreSQL + API
 ```bash
 uv sync                                         # 의존성 설치 (brew install uv)
 COOKIE_SECURE=false uv run uvicorn app.main:app --reload   # SQLite 파일(nurs-local.db), http://localhost:8000/docs
+uv run python -m app.seed                        # 데모 데이터 (head@demo.nurs / nurse1~3@demo.nurs, 비밀번호 Demo1234!). 다시 실행해도 안전
 ```
 
 | 환경 변수 | 기본값 | 설명 |
@@ -44,8 +45,8 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 
 - **응답**: 단일 `{"data": {...}}`, 목록 `{"data": [...], "meta": {page, size, totalElements, totalPages}}`, 204는 본문 없음
 - **오류**: `{"error": {code, message, traceId, status, timestamp, fieldErrors?, details?}}`. 응답 헤더 `X-Trace-Id`도 같은 값
-- **인증**: 로그인 시 `ACCESS_TOKEN`(30분)·`REFRESH_TOKEN`(14일, Path=/api/v1/auth)·`CSRF_TOKEN` 쿠키. 토큰은 DB에 해시만 저장. `POST /auth/refresh`는 토큰 쌍을 회전
-- **CSRF**: signup·login을 제외한 POST/PUT/PATCH/DELETE는 `X-CSRF-Token` 헤더 = `CSRF_TOKEN` 쿠키
+- **인증**: 가입·로그인 시 `ACCESS_TOKEN`(30분)·`REFRESH_TOKEN`(14일, Path=/api/v1/auth)·`CSRF_TOKEN` 쿠키. 토큰은 DB에 해시만 저장. `POST /auth/refresh`는 토큰을 회전하고, 이미 회전된 리프레시 토큰이 다시 오면 그 로그인 계열 세션을 모두 폐기. `POST /auth/logout`은 액세스가 만료돼도 리프레시 쿠키로 동작. 가입은 클라이언트 IP별 시간당 20회 (리버스 프록시 뒤라면 uvicorn `--proxy-headers` 필요)
+- **CSRF**: signup·login을 제외한 POST/PUT/PATCH/DELETE는 `X-CSRF-Token` 헤더에 `CSRF_TOKEN` 쿠키 값을 실어야 하며, 서버는 그 값이 요청 쿠키의 세션이 발급한 것인지 확인
 - **병동 범위**: 경로는 `/wards/me/...`. 다른 병동 리소스·초안 근무표(일반 간호사)는 404, 역할 부족은 403
 - **멱등성**: 모든 POST가 `Idempotency-Key`를 지원 (사용자별, 24시간). 같은 키·같은 요청은 저장된 2xx 응답 + `Idempotent-Replayed: true`, 다른 요청이면 422 `IDEMPOTENCY_KEY_REUSED`
 - **동시성**: 근무표 변경은 `baseVersion` 불일치 시 409 `VERSION_CONFLICT`. 활성 편집 잠금이 있으면 `X-Schedule-Lock-Token`이 없거나 틀릴 때 423 `SCHEDULE_LOCKED`. 잠금이 없으면 baseVersion만으로 충돌을 막는다. 잠금 획득·해제는 근무표 version을 올리지 않는다
@@ -79,6 +80,7 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 | AUTH-03 세션 갱신 | 리프레시 토큰 회전. 쓴 토큰은 즉시 폐기 |
 | WARD-01 병동 개설 | requiredStaff D/E/N 각 0 이상·합계 1 이상, 아니면 422 `INVALID_STAFFING`. 가입 대기 중이면 409 |
 | WARD-03 가입 신청 | 코드 대소문자 무시, 계정당 시간당 10회. 신청 상태는 `GET /me`의 `membershipRequest`로 조회 |
+| WARD-08 가입 코드 재발급 | 읽은 코드가 그대로일 때만 바꾼다. 다른 수간호사가 먼저 재발급했으면 409 `ROTATION_IN_PROGRESS` (덮어쓰지 않음) |
 | WARD-05 가입 승인 | 본문 없음이 기본. 선택적으로 `{nurseId}`를 주면 계정 없는 기존 간호사 행에 연결 |
 | RULE-06·07 OFF 목표 | 근무표가 있는 달만 (없으면 404 `TARGET_NOT_FOUND`). 자동값 = 공휴일 수 + 1, `targetCount: null`이면 자동으로 복귀 |
 | RULE-05 공휴일 | 매년 같은 날짜의 공휴일만 기본 제공. 설·추석·대체공휴일은 병동이 보정 |
