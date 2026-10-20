@@ -18,6 +18,7 @@ docker compose up --build -d     # PostgreSQL + API
 ```bash
 uv sync                                         # 의존성 설치 (brew install uv)
 COOKIE_SECURE=false uv run uvicorn app.main:app --reload   # SQLite 파일(nurs-local.db), http://localhost:8000/docs
+uv run python -m app.seed                        # 데모 데이터 (head@demo.nurs / nurse1~3@demo.nurs, 비밀번호 Demo1234!). 다시 실행해도 안전
 ```
 
 | 환경 변수 | 기본값 | 설명 |
