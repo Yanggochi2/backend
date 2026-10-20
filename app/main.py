@@ -4,7 +4,7 @@ import logging
 import os
 import re
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 
 from fastapi import FastAPI, Request
@@ -55,6 +55,8 @@ async def lifespan(_: FastAPI):
     task = asyncio.create_task(_reminder_loop())
     yield
     task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
 
 
 app = FastAPI(title="병동 근무표 API", version="1.0", lifespan=lifespan)
