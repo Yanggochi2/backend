@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.business import audit, members, notifications, nurses, requests, rules, schedules
-from app.business.common import (RateLimiter, conflict, iso, not_found, page, require_reason, today_kst,
+from app.business.common import (RateLimiter, conflict, forbidden, iso, not_found, page, require_reason, today_kst,
                                  unprocessable)
 from app.domain.model import NotificationType, NurseStatus, Preset, RequestStatus, Role
 from app.persistence.db import now
@@ -293,7 +293,12 @@ def unlink_account(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, reason:
     """
     reason = require_reason(reason)
     m = members.require_head(db, user_id)
-    n = db.get(Nurse, nurse_id)
+    # 수간호사 둘이 서로를 동시에 해제해 0명이 되지 않게: 병동 행을 잠근 뒤 내 권한을 다시 읽는다
+    db.get(Ward, m.ward_id, with_for_update=True)
+    me = db.get(Nurse, m.nurse_id, populate_existing=True)
+    if me.user_id != user_id or me.role != Role.HEAD_NURSE:
+        raise forbidden("수간호사 권한이 필요합니다")
+    n = db.get(Nurse, nurse_id, populate_existing=True)
     if n is None or n.ward_id != m.ward_id:
         raise not_found("NURSE_NOT_FOUND")
     if n.id == m.nurse_id:
@@ -308,7 +313,7 @@ def unlink_account(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, reason:
     db.flush()
     cancelled = requests.cancel_pending(db, n.id)
     schedules.release_locks(db, m.ward_id, account.id)
-    audit.log(db, m.ward_id, user_id, "MEMBER_UNLINKED", "NURSE", n.id, f"account={account.name} role={before_role}",
+    audit.log(db, m.ward_id, user_id, "MEMBER_UNLINKED", "NURSE", n.id, f"account={account.id} name={account.name} role={before_role}",
               f"reason={reason} cancelledRequests={cancelled}")
     w = db.get(Ward, m.ward_id)
     notifications.notify_user(db, account.id, NotificationType.MEMBER_UNLINKED, "병동 계정 연결 해제",
