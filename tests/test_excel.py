@@ -49,3 +49,13 @@ def test_export_is_head_only():
     n, _ = member(h)
     s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
     err(n("GET", f"/wards/me/schedules/{s['id']}/export.xlsx"), 403, "FORBIDDEN")
+
+
+def test_export_writes_formula_like_names_as_text():
+    """이름이 "="로 시작해도 수식이 아니라 텍스트 셀로 내보낸다 (엑셀 수식 주입 방지)"""
+    h = ward_head()
+    add_nurses(h, 1, prefix="=1+")
+    s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
+    ws = load_workbook(io.BytesIO(h("GET", f"/wards/me/schedules/{s['id']}/export.xlsx").content)).active
+    c = next(ws.cell(r, 1) for r in range(2, ws.max_row + 1) if str(ws.cell(r, 1).value).startswith("="))
+    assert c.data_type == "s" and c.value == "=1+00"
