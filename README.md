@@ -14,7 +14,7 @@ docker compose up --build -d     # PostgreSQL + API
 ## 로컬 개발 (uv)
 ```bash
 uv sync                                         # 의존성 설치 (brew install uv)
-uv run uvicorn app.main:app --reload            # SQLite 파일(nurs-local.db), http://localhost:8000/docs
+COOKIE_SECURE=false uv run uvicorn app.main:app --reload   # SQLite 파일(nurs-local.db), http://localhost:8000/docs
 ```
 
 | 환경 변수 | 기본값 | 설명 |
@@ -26,7 +26,7 @@ uv run uvicorn app.main:app --reload            # SQLite 파일(nurs-local.db), 
 ## 테스트
 ```bash
 uv run pytest     # 도메인 규칙 단위 테스트 + API 명세서 v1.0 시나리오 (TestClient, 임시 SQLite)
-# PostgreSQL로 검증: 빈 DB를 TEST_DATABASE_URL로 지정
+# PostgreSQL로 검증: 호스트에서 접속 가능한 빈 DB를 TEST_DATABASE_URL로 지정 (compose의 postgres는 포트를 열지 않음)
 TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run pytest
 ```
 
@@ -48,6 +48,7 @@ TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run py
 - **동시성**: 근무표 변경은 `baseVersion` 불일치 시 409 `VERSION_CONFLICT`. 활성 편집 잠금이 있으면 `X-Schedule-Lock-Token`이 없거나 틀릴 때 423 `SCHEDULE_LOCKED`. 잠금이 없으면 baseVersion만으로 충돌을 막는다. 잠금 획득·해제는 근무표 version을 올리지 않는다
 
 ## 🔶 결정 필요 항목에 대한 현재 구현
+
 | API | 선택한 동작 |
 |---|---|
 | AUTH-03 세션 갱신 | 리프레시 토큰 회전. 쓴 토큰은 즉시 폐기 |
