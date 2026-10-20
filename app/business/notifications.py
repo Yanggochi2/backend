@@ -81,10 +81,11 @@ def remind_tomorrow(db: Session) -> None:
     tomorrow: date = today_kst() + timedelta(days=1)
     for s in db.scalars(select(Schedule).where(Schedule.year_month == tomorrow.strftime("%Y-%m"),
                                                Schedule.status == ScheduleStatus.CONFIRMED)):
-        for a in db.scalars(select(Assignment).where(Assignment.schedule_id == s.id, Assignment.date == tomorrow)):
+        for a, user_id in db.execute(select(Assignment, Nurse.user_id).join(Nurse, Nurse.id == Assignment.nurse_id)
+                                     .where(Assignment.schedule_id == s.id, Assignment.date == tomorrow,
+                                            Nurse.user_id.is_not(None))):
             if a.duty.is_work:
-                n = db.get(Nurse, a.nurse_id)
-                notify_user(db, n.user_id, NotificationType.DUTY_REMINDER, "내일 근무",
+                notify_user(db, user_id, NotificationType.DUTY_REMINDER, "내일 근무",
                             f"내일({tomorrow}) {a.duty} 근무입니다", "SCHEDULE", s.id)
 
 
