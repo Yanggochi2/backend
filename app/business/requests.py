@@ -5,7 +5,7 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.business import audit, members, notifications, schedules
+from app.business import audit, members, notifications, schedules, off_deadlines
 from app.business.common import (bad_request, conflict, iso, not_found, page, parse_month, require_reason,
                                  today_kst, unprocessable)
 from app.business.members import Member
@@ -37,6 +37,9 @@ def create(db: Session, user_id: uuid.UUID, type_: RequestType, dates: list[date
         raise bad_request("VALIDATION_ERROR", "희망 근무는 D/E/N 중 하나여야 합니다", "preferredDuty")
     if min(dates) < today_kst():
         raise unprocessable("PAST_DATE", "지난 날짜는 신청할 수 없습니다")
+    if type_ == RequestType.PREFERRED_OFF:
+        off_deadlines.lock_ward(db, m.ward_id)
+        off_deadlines.require_open(db, m.ward_id, dates[0].strftime("%Y-%m"))
     # 같은 간호사의 동시 신청을 직렬화해 중복 날짜·희망 오프 한도 검사가 경쟁하지 않게 한다
     db.get(Nurse, m.nurse_id, with_for_update=True, populate_existing=True)
     if schedules.is_confirmed(db, m.ward_id, dates[0], lock=True):

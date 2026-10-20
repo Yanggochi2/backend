@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Request, Response
 
-from app.business import (auth, generations, nurses, requests, rules, schedules, wards)
+from app.business import (auth, generations, nurses, off_deadlines, requests, rules, schedules, wards)
 from app.business.common import parse_month
 from app.domain.model import DutyRole, NurseStatus, RequestStatus, RequestType, Role, Severity
 from app.presentation import schemas as s
@@ -296,3 +296,35 @@ def reject_request(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reaso
 @api.post("/wards/me/requests/{request_id}/cancel")
 def cancel_request(request_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(requests.cancel(db, user_id, request_id))
+
+
+@api.get("/wards/me/charges")
+def list_charges(user_id: UserId, db: DB):
+    return _d(nurses.charges(db, user_id))
+
+
+@api.put("/wards/me/nurses/{nurse_id}/charge")
+def set_charge(nurse_id: uuid.UUID, body: s.ChargePut, user_id: UserId, db: DB):
+    return _d(nurses.set_charge(db, user_id, nurse_id, body.is_charge, body.version))
+
+
+@api.get("/wards/me/rule-catalog")
+def rule_catalog(user_id: UserId, db: DB):
+    return _d(rules.catalog(db, user_id))
+
+
+@api.delete("/wards/me/holidays/{day}", status_code=204)
+def reset_holiday(day: date, user_id: UserId, db: DB):
+    rules.delete_holiday(db, user_id, day)
+
+
+@api.get("/wards/me/off-request-deadlines/{year_month}")
+def get_off_deadline(year_month: str, user_id: UserId, db: DB):
+    ym = parse_month(year_month).strftime("%Y-%m")
+    return _d(off_deadlines.get(db, user_id, ym))
+
+
+@api.put("/wards/me/off-request-deadlines/{year_month}")
+def put_off_deadline(year_month: str, body: s.OffDeadlinePut, user_id: UserId, db: DB):
+    ym = parse_month(year_month).strftime("%Y-%m")
+    return _d(off_deadlines.put(db, user_id, ym, body.closes_at, body.manually_closed, body.version))

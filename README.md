@@ -22,3 +22,9 @@ uv run pytest
 - `app/business` 서비스 (권한·병동 범위 검증, 감사 로그, 알림)
 - `app/persistence` SQLAlchemy 모델
 - `app/domain` 순수 규칙. FastAPI·DB에 의존하지 않는다
+
+## 규칙·공휴일·간호사·차지·오프 마감
+
+[API 계약과 규칙 엔진 구조](docs/management-api.md)를 참고하세요.
+규칙 카탈로그의 파라미터를 생성기·검증기가 함께 사용하며, 월별 희망 오프 접수 마감과
+차지 지정·해제를 별도 API로 관리합니다. 변경 요청은 인증 쿠키와 CSRF 헤더가 필요합니다.

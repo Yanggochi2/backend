@@ -99,29 +99,40 @@ class Preset(StrEnum):
 
 
 @dataclass(frozen=True)
+class RuleSetting:
+    enabled: bool
+    severity: Severity
+    parameters: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class Rules:
-    """RULE-01·02 값 + AUTH-00 듀티별 필요 인원"""
-    required_d: int
-    required_e: int
-    required_n: int
-    max_consecutive_nights: int
-    max_consecutive_work_days: int
-    forbid_night_to_day: bool
-    # RULE-01 규칙 코드 → 심각도. None이면 꺼짐, 없으면 검증기 기본값
-    severity: dict = field(default_factory=dict, compare=False)
+    """규칙 코드별 설정. 생성기와 검증기가 같은 파라미터와 심각도를 사용한다."""
+    settings: dict[str, RuleSetting]
+
+    def enabled(self, code: str) -> bool:
+        return self.settings[code].enabled
 
     def enforced(self, code: str) -> bool:
-        """자동 생성이 반드시 지켜야 하는 규칙인지 (켜져 있고 HARD)"""
-        return self.severity.get(code, Severity.HARD) == Severity.HARD
+        return self.enabled(code) and self.settings[code].severity == Severity.HARD
+
+    def parameter(self, code: str, key: str):
+        return self.settings[code].parameters[key]
+
+    def severity_for(self, code: str) -> Severity:
+        return self.settings[code].severity
 
     @staticmethod
     def preset(p: Preset, d: int, e: int, n: int) -> "Rules":
-        if p == Preset.STANDARD:
-            return Rules(d, e, n, 3, 5, True)
-        return Rules(d, e, n, 31, 31, False)
+        from copy import deepcopy
+        from app.domain.rule_catalog import CATALOG, MINIMAL_OFF
+        return Rules({code: RuleSetting(not (p == Preset.MINIMAL and code in MINIMAL_OFF),
+                                        Severity(definition.severity),
+                                        {"D": d, "E": e, "N": n} if code == "COVERAGE" else deepcopy(definition.params))
+                      for code, definition in CATALOG.items()})
 
     def required(self, duty: Duty) -> int:
-        return {Duty.D: self.required_d, Duty.E: self.required_e, Duty.N: self.required_n}.get(duty, 0)
+        return self.settings["COVERAGE"].parameters.get(duty, 0)
 
 
 @dataclass(frozen=True)

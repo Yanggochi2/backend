@@ -241,3 +241,16 @@ class IdempotencyRecord(Base):
     status_code: Mapped[int]
     body: Mapped[bytes]
     created_at: Mapped[datetime] = mapped_column(default=now)
+
+
+class OffRequestDeadline(Base):
+    """병동·대상 월별 희망 오프 신청 마감. UTC naive datetime으로 저장한다."""
+    __tablename__ = "off_request_deadlines"
+    __table_args__ = (UniqueConstraint("ward_id", "year_month"),)
+    id: Mapped[PK]
+    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), index=True)
+    year_month: Mapped[str] = mapped_column(String(7))
+    closes_at: Mapped[datetime | None]
+    manually_closed: Mapped[bool] = mapped_column(default=False)
+    version: Mapped[int] = mapped_column(default=0)
+    __mapper_args__ = {"version_id_col": version}
