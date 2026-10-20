@@ -9,10 +9,10 @@ docker compose up --build -d     # PostgreSQL + API
 ```
 - 설정은 `.env`에서 읽는다: DB 계정(`POSTGRES_*`), `COOKIE_SECURE`, `API_PORT`, `REMINDER_EVERY_SECONDS`. 설명은 [.env.example](.env.example)
 - `.env`는 git에 올리지 않는다(`.gitignore`). **배포 환경에서는 `POSTGRES_PASSWORD`를 바꾸고 HTTPS면 `COOKIE_SECURE=true`**
-- API 문서: http://localhost:8000/docs (Swagger), 기본 경로 `/api/v1`
+- API 문서: http://localhost:8000/docs (Swagger, `API_PORT`를 바꿨으면 그 포트), 기본 경로 `/api/v1`
 - 로그: `docker compose logs -f api` / 중지: `docker compose down` / DB까지 초기화: `docker compose down -v`
 - 데이터는 `pgdata` 볼륨에 남는다. 테이블은 서버 시작 시 자동 생성
-- PostgreSQL 포트는 호스트에 열지 않는다(로컬 5432와 충돌 방지). 직접 접속: `docker compose exec postgres psql -U nurs`
+- PostgreSQL 포트는 호스트에 열지 않는다(로컬 5432와 충돌 방지). 직접 접속: `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`
 
 ## 로컬 개발 (uv)
 ```bash
