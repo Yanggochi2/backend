@@ -6,8 +6,8 @@ import uuid
 
 from fastapi import APIRouter, Request, Response
 
-from app.business import (auth, wards)
-from app.domain.model import RequestStatus
+from app.business import (auth, nurses, wards)
+from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
@@ -99,3 +99,32 @@ def grant_head(nurse_id: uuid.UUID, user_id: UserId, db: DB):
 @api.post("/wards/me/head-nurse-transfer")
 def transfer_head(body: s.Transfer, user_id: UserId, db: DB):
     return _d(wards.transfer_head(db, user_id, body.target_nurse_id))
+
+
+# --- 간호사 (NUR)
+@api.post("/wards/me/nurses", status_code=201)
+def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
+    return _d(nurses.create(db, user_id, body.model_dump()))
+
+
+@api.get("/wards/me/nurses")
+def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, role: Role | None = None,
+                dutyRole: DutyRole | None = None, status: NurseStatus | None = None,  # noqa: N803
+                includeRetired: bool = False, sort: str | None = None):  # noqa: N803
+    return nurses.list_(db, user_id, q, role, dutyRole, status, includeRetired, sort, p.page, p.size)
+
+
+@api.get("/wards/me/nurses/{nurse_id}")
+def get_nurse(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(nurses.get(db, user_id, nurse_id))
+
+
+@api.patch("/wards/me/nurses/{nurse_id}")
+def patch_nurse(nurse_id: uuid.UUID, body: s.NursePatch, user_id: UserId, db: DB):
+    return _d(nurses.patch(db, user_id, nurse_id, body.model_dump(exclude_unset=True, exclude={"version"}),
+                           body.version))
+
+
+@api.post("/wards/me/nurses/{nurse_id}/retire")
+def retire_nurse(nurse_id: uuid.UUID, body: s.Retire, user_id: UserId, db: DB):
+    return _d(nurses.retire(db, user_id, nurse_id, body.affiliation_end))
