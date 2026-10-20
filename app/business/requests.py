@@ -37,7 +37,9 @@ def create(db: Session, user_id: uuid.UUID, type_: RequestType, dates: list[date
         raise bad_request("VALIDATION_ERROR", "희망 근무는 D/E/N 중 하나여야 합니다", "preferredDuty")
     if min(dates) < today_kst():
         raise unprocessable("PAST_DATE", "지난 날짜는 신청할 수 없습니다")
-    if schedules.is_confirmed(db, m.ward_id, dates[0]):
+    # 같은 간호사의 동시 신청을 직렬화해 중복 날짜·희망 오프 한도 검사가 경쟁하지 않게 한다
+    db.get(Nurse, m.nurse_id, with_for_update=True, populate_existing=True)
+    if schedules.is_confirmed(db, m.ward_id, dates[0], lock=True):
         raise conflict("SCHEDULE_CONFIRMED", "이미 확정된 월입니다")
     ym = dates[0].strftime("%Y-%m")
     mine = list(db.scalars(select(WorkRequest).where(WorkRequest.nurse_id == m.nurse_id, WorkRequest.year_month == ym,
@@ -113,7 +115,11 @@ def withdraw_all(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date
             continue  # 이미 지난 연차·희망은 기록으로 남긴다
         if r.status == RequestStatus.APPROVED and r.type == RequestType.ANNUAL_LEAVE:
             schedules.sync_leave(db, ward_id, nurse_id, future, False)
-        r.status = RequestStatus.CANCELLED
+        past = [d.isoformat() for d in r.dates() if d <= end]
+        if r.status == RequestStatus.APPROVED and past:
+            r.target_dates = past  # 종료일까지 쓴 날짜는 승인 기록으로 남긴다
+        else:
+            r.status = RequestStatus.CANCELLED
         n += 1
     return n
 
