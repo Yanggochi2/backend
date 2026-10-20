@@ -30,11 +30,17 @@ class User(Base):
 
 
 class SessionToken(Base):
-    """액세스·리프레시 토큰 쌍. DB에는 해시만 저장한다"""
+    """
+    액세스·리프레시·CSRF 토큰 묶음. DB에는 해시만 저장한다.
+    같은 로그인에서 회전으로 이어진 행은 family_id를 공유한다. 회전된 행은 재사용 탐지용으로 만료까지 남긴다
+    """
     __tablename__ = "sessions"
     id: Mapped[PK]
+    family_id: Mapped[uuid.UUID] = mapped_column(index=True)
     access_hash: Mapped[str] = mapped_column(String(64), unique=True)
     refresh_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    rotated: Mapped[bool] = mapped_column(default=False)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     access_expires_at: Mapped[datetime]
     refresh_expires_at: Mapped[datetime]
