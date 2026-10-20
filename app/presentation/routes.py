@@ -8,9 +8,9 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Request, Response
 
-from app.business import (auth, generations, nurses, rules, schedules, wards)
+from app.business import (auth, generations, nurses, requests, rules, schedules, wards)
 from app.business.common import parse_month
-from app.domain.model import DutyRole, NurseStatus, RequestStatus, Role, Severity
+from app.domain.model import DutyRole, NurseStatus, RequestStatus, RequestType, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
@@ -256,3 +256,43 @@ def relax_generation(job_id: uuid.UUID, body: s.Relaxations, user_id: UserId, db
 @api.post("/wards/me/generations/{job_id}/partial-result/apply")
 def apply_partial(job_id: uuid.UUID, body: s.BaseVersion, user_id: UserId, db: DB, lock: LockToken = None):
     return _d(generations.apply_partial(db, user_id, job_id, body.base_version, lock))
+
+
+# --- 신청 (REQ). /requests/me는 /requests/{id}보다 먼저 선언
+@api.post("/wards/me/requests", status_code=201)
+def create_request(body: s.WorkRequestCreate, user_id: UserId, db: DB):
+    return _d(requests.create(db, user_id, body.type, body.target_dates, body.reason_code, body.reason_detail,
+                              body.preferred_duty))
+
+
+@api.get("/wards/me/requests/me")
+def my_requests(user_id: UserId, db: DB, p: Page, yearMonth: str | None = None,  # noqa: N803
+                type: RequestType | None = None, status: RequestStatus | None = None):  # noqa: A002
+    return requests.mine(db, user_id, yearMonth, type, status, p.page, p.size)
+
+
+@api.get("/wards/me/requests")
+def ward_requests(user_id: UserId, db: DB, p: Page, applicantId: uuid.UUID | None = None,  # noqa: N803
+                  yearMonth: str | None = None, type: RequestType | None = None,  # noqa: N803,A002
+                  status: RequestStatus | None = None):
+    return requests.ward(db, user_id, applicantId, yearMonth, type, status, p.page, p.size)
+
+
+@api.get("/wards/me/requests/{request_id}")
+def get_request(request_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(requests.get(db, user_id, request_id))
+
+
+@api.post("/wards/me/requests/{request_id}/approve")
+def approve_request(request_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(requests.approve(db, user_id, request_id))
+
+
+@api.post("/wards/me/requests/{request_id}/reject")
+def reject_request(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
+    return _d(requests.reject(db, user_id, request_id, body.reason if body else None))
+
+
+@api.post("/wards/me/requests/{request_id}/cancel")
+def cancel_request(request_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(requests.cancel(db, user_id, request_id))
