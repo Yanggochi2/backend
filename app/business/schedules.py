@@ -497,17 +497,27 @@ def _readiness(db: Session, s: Schedule, vs: list[dict]) -> dict:
 
 
 def _off_target_view(db: Session, s: Schedule) -> dict:
-    holidays = len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month)))
-    return {"yearMonth": s.year_month, "targetCount": _off_target(db, s), "autoCount": holidays + 1,
-            "holidayCount": holidays, "source": "AUTO" if s.off_target is None else "MANUAL",
+    holidays, weekends, auto = _rest_days(db, s)
+    return {"yearMonth": s.year_month, "targetCount": _off_target(db, s), "autoCount": auto,
+            "holidayCount": holidays, "weekendCount": weekends, "source": "AUTO" if s.off_target is None else "MANUAL",
             "reason": s.off_target_reason}
 
 
 def _off_target(db: Session, s: Schedule) -> int:
-    """RULE-03: 공휴일 수 + 1. ponytail: 주휴일 포함 여부 🔶 미확정이라 공휴일만 센다"""
-    if s.off_target is not None:
-        return s.off_target
-    return len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month))) + 1
+    """RULE-04: 수동 지정값, 없으면 자동값"""
+    return s.off_target if s.off_target is not None else _rest_days(db, s)[2]
+
+
+def _rest_days(db: Session, s: Schedule) -> tuple[int, int, int]:
+    """
+    (공휴일 수, 주말 수, 자동 OFF 목표). 자동 OFF 목표 = 주말(토·일) + 평일 공휴일 + 1(보건휴가).
+    주 5일제라 토·일은 쉬는 날로 센다 (명세의 🔶 '주휴일 포함 여부'를 포함으로 결정)
+    """
+    first = parse_month(s.year_month)
+    holidays = rules.holiday_dates(db, s.ward_id, first)
+    weekends = {d for d in (first + timedelta(days=i) for i in range((month_end(first) - first).days + 1))
+                if d.weekday() >= 5}
+    return len(holidays), len(weekends), len(weekends | holidays) + 1
 
 
 def release_locks(db: Session, ward_id: uuid.UUID, user_id: uuid.UUID) -> None:
