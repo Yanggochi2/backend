@@ -263,10 +263,12 @@ class _Model:
         """그 달 내내 소속이고 근무 가능한 간호사끼리 야간·주말 근무·총 근무 횟수 차이를 줄인다"""
         days = self.days
         full = [n for n in self.r.nurses if n.affiliated(days[0]) and n.affiliated(days[-1])
-                and n.status != NurseStatus.ON_LEAVE and n.duty_role != DutyRole.NIGHT_ONLY]
+                and n.status != NurseStatus.ON_LEAVE]
+        shift = [n for n in full if n.duty_role != DutyRole.NIGHT_ONLY]
         weekend = [d for d in days if d.weekday() >= 5]
-        night_ok = [n for n in full if n.status != NurseStatus.PREGNANT and n.duty_role != DutyRole.CHARGE]
-        for group, ds, kind in ((night_ok, days, Duty.N), (full, weekend, WORK), (full, days, WORK)):
+        night_ok = [n for n in shift if n.status != NurseStatus.PREGNANT and n.duty_role != DutyRole.CHARGE]
+        # 나이트 전담은 야간·주말 비교에서 빼고 총 근무일수만 맞춘다 → 근무일이 모두 나이트가 되어 나이트를 맡는다
+        for group, ds, kind in ((night_ok, days, Duty.N), (shift, weekend, WORK), (full, days, WORK)):
             if len(group) < 2:
                 continue
             hi, lo = self.m.NewIntVar(0, len(ds), ""), self.m.NewIntVar(0, len(ds), "")

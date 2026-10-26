@@ -34,7 +34,7 @@ def test_small_ward_keeps_every_hard_rule():
     # 차지 1명이라 근무마다 차지는 불가능 → '차지는 D만' 규칙으로 검사
     rules = Rules(2, 2, 2, 3, 5, True, severity={"CHARGE_DAY_ONLY": Severity.HARD, "CHARGE_EVERY_SHIFT": None,
                                                   "SENIOR_EVERY_SHIFT": None})
-    out, vs = run(Roster(NOV, ns, fixed, rules, 8))
+    out, vs = run(Roster(NOV, ns, fixed, rules, 8), seconds=3)
     assert hard(vs) == []
     assert out.cell(5, DAYS[9]) == Duty.AL and out.cell(6, DAYS[3]) == Duty.N, "연차·고정 칸 유지"
     for n in ns:
@@ -90,4 +90,4 @@ def test_charge_every_shift_and_night_only_nurses():
             assert any(out.cell(n.id, d) == x for n in ns if n.duty_role == DutyRole.CHARGE), f"{d} {x} 차지"
     for i in (6, 7):
         xs = seq(out, i)
-        assert set(xs) <= {Duty.N, Duty.O} and xs.count(Duty.N) <= 15, "나이트 전담"
+        assert set(xs) <= {Duty.N, Duty.O} and 10 <= xs.count(Duty.N) <= 15, "나이트 전담은 나이트를 맡는다"
