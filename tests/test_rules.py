@@ -25,8 +25,9 @@ def test_detects_hard_violations():
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님
+    # 3번의 N N D는 역순환이면서 야간 2연속 후 휴식 부족
     assert ids(validate(Roster(OCT, ns, cells, rules, 0))) == {
-        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY"}
+        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "NIGHT_REST"}
     alone = Roster(OCT, [ns[1]], {2: {START: Duty.N}}, rules, 0)
     assert "NEW_NIGHT_ALONE" in ids(validate(alone))
 
@@ -86,3 +87,39 @@ def test_wish_duty_is_preferred_and_checked():
     ignored = {1: {START: Duty.D}, 2: {START: Duty.O}}
     vs = validate(Roster(OCT, ns, ignored, rules, 0, wish_duties=wish))
     assert any(v.rule_id == "WISH_DUTY_IGNORED" and v.severity == Severity.SOFT for v in vs)
+
+
+def _seq(*duties, start=0):
+    """day(start)부터 듀티를 차례로 채운 한 사람의 셀"""
+    return {day(start + i): Duty(x) for i, x in enumerate(duties)}
+
+
+def _found(cells, rules=None, n=None):
+    rules = rules or Rules(0, 0, 0, 3, 5, True)
+    return validate(Roster(OCT, [n or nurse(1)], {1: cells}, rules, 0))
+
+
+def test_reverse_rotation_is_hard():
+    for a, b in (("E", "D"), ("N", "D"), ("N", "E")):
+        vs = [v for v in _found(_seq(a, b)) if v.rule_id == "NIGHT_TO_DAY"]
+        assert len(vs) == 1 and vs[0].severity == Severity.HARD and vs[0].date == day(1), (a, b)
+    assert "NIGHT_TO_DAY" not in ids(_found(_seq("D", "E", "N", "O")))
+
+
+def test_night_rest_after_two_nights():
+    assert "NIGHT_REST" in ids(_found(_seq("N", "N", "O", "D")))
+    assert "NIGHT_REST" not in ids(_found(_seq("N", "N", "O", "O", "D")))
+    assert "NIGHT_REST" not in ids(_found(_seq("N", "O", "O", "D"))), "야간 1일은 해당 없음"
+
+
+def test_soft_pattern_rules():
+    assert "NIGHT_OFF_DAY" in ids(_found(_seq("N", "O", "D")))
+    assert "ISOLATED_SHIFT" in ids(_found(_seq("O", "D", "O")))
+    assert "ISOLATED_SHIFT" in ids(_found(_seq("D", "O", "D")))
+    assert "ISOLATED_SHIFT" not in ids(_found(_seq("D", "O", start=1))), "앞날이 미배정이면 판단 안 함"
+    nights = {day(i): Duty.N for i in range(0, 21, 3)}  # 7회
+    assert "MAX_MONTHLY_NIGHTS" in ids(_found(nights))
+    # 10/5(월)~10/11(일) 주에 연속 OFF가 없음
+    week = _seq("D", "O", "D", "O", "D", "O", "D", start=4)
+    assert "WEEKLY_REST" in ids(_found(week))
+    assert "WEEKLY_REST" not in ids(_found(_seq("D", "D", "O", "O", "D", "D", "D", start=4)))
