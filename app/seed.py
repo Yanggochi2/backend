@@ -49,7 +49,7 @@ def _nurse_fields(name: str, duty_role: DutyRole, career: int, start: date) -> d
 def seed(db) -> None:
     head = _user(db, *HEAD)
     if members.membership(db, head.id) is None:
-        wards.create(db, head.id, "한빛대학병원", "7병동", {"D": 6, "E": 5, "N": 4}, Preset.STANDARD)
+        wards.create(db, head.id, "한빛대학병원", "7병동", {"D": 7, "E": 6, "N": 5}, Preset.STANDARD)
     ward_id = members.membership(db, head.id).ward_id
     start = today_kst()
 
