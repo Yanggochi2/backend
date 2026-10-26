@@ -7,6 +7,7 @@ from datetime import timedelta
 # TEST_DATABASE_URL로 PostgreSQL 등 다른 DB를 지정할 수 있다 (빈 DB여야 함)
 os.environ["DATABASE_URL"] = os.getenv("TEST_DATABASE_URL", f"sqlite:///{tempfile.mkdtemp()}/test.db")
 os.environ["COOKIE_SECURE"] = "false"
+os.environ.setdefault("GENERATION_DEFAULT_SECONDS", "1")  # CP-SAT 탐색 시간 (운영 기본 10초)
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
