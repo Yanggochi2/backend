@@ -58,6 +58,9 @@ def seed(db) -> None:
         if members.membership(db, u.id) is None:
             j = wards.request_join(db, u.id, wards.join_code(db, head.id)["code"])
             wards.approve(db, head.id, j["id"], None)
+            # 승인일(오늘)이 소속 시작일이 되면 이번 달 근무표에 며칠만 들어간다. 데모에서는 다른 간호사처럼 1일부터
+            n = members.membership(db, u.id)
+            n.joined_at = n.affiliation_start = start.replace(day=1)
 
     existing = set(db.scalars(select(Nurse.name).where(Nurse.ward_id == ward_id)))
     for name, duty_role, career in ROSTER:
