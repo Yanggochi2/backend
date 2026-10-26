@@ -44,6 +44,10 @@ class Login(Body):
     password: NonBlank
 
 
+class Withdraw(Body):
+    password: NonBlank
+
+
 class CreateWard(Body):
     hospital_name: NonBlank
     ward_name: NonBlank
@@ -60,7 +64,8 @@ class ApproveMembership(Body):
 
 
 class Reason(Body):
-    reason: str | None = None
+    # 알림 body String(500)에 "{병동명(≤100)} 가입이 반려되었습니다. 사유: "와 함께 들어가므로 300자로 제한
+    reason: Annotated[str, StringConstraints(max_length=300)] | None = None
 
 
 class Transfer(Body):
@@ -158,12 +163,39 @@ class BaseVersion(Body):
     base_version: int
 
 
+class NurseMapping(Body):
+    row_number: int
+    nurse_id: uuid.UUID | None
+
+
+class DutyMapping(Body):
+    raw: str
+    duty_code: Duty | None
+
+
+class ImportMappingPatch(Body):
+    nurse_mappings: list[NurseMapping] | None = None
+    duty_mappings: list[DutyMapping] | None = None
+
+
 class WorkRequestCreate(Body):
     type: RequestType
     target_dates: list[date] = Field(min_length=1)
     reason_code: str
     reason_detail: str | None = Field(None, max_length=500)
     preferred_duty: Duty | None = None
+
+
+class NotificationPatch(Body):
+    read: bool
+
+
+class NotificationSettingsPatch(Body):
+    schedule_confirmed: bool | None = None
+    schedule_cancelled: bool | None = None
+    request_result: bool | None = None
+    duty_reminder: bool | None = None
+    web_push: bool | None = None
 
 
 class ChargePut(Body):

@@ -3,19 +3,21 @@ API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 항상 �
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Request, Response
+from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
 
-from app.business import (auth, generations, nurses, off_deadlines, requests, rules, schedules, wards)
-from app.business.common import parse_month
-from app.domain.model import DutyRole, NurseStatus, RequestStatus, RequestType, Role, Severity
+from app.business import (audit, auth, excel, generations, notifications, nurses, off_deadlines, requests, rules,
+                          schedules, wards)
+from app.business.common import ApiException, parse_month
+from app.domain.model import DutyRole, NotificationType, NurseStatus, RequestStatus, RequestType, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
                                    set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
+MAX_UPLOAD = 10 * 1024 * 1024  # 🔶 권장 10MB
 LockToken = Annotated[str | None, Header(alias="X-Schedule-Lock-Token")]
 
 
@@ -23,10 +25,24 @@ def _d(x) -> dict:
     return {"data": x}
 
 
-# --- 인증 (AUTH-01·02)
+def _upload(file: UploadFile) -> bytes:
+    data = file.file.read(MAX_UPLOAD + 1)
+    if len(data) > MAX_UPLOAD:
+        raise ApiException(413, "FILE_TOO_LARGE", "파일이 너무 큽니다 (최대 10MB)")
+    return data
+
+
+def _utc(dt: datetime | None) -> datetime | None:
+    return dt.astimezone(UTC).replace(tzinfo=None) if dt and dt.tzinfo else dt
+
+
+# --- 인증 (AUTH-01·05)
 @api.post("/auth/signup", status_code=201)
-def signup(body: s.Signup, db: DB):
-    return _d(auth.signup(db, body.name, body.email, body.password))
+def signup(body: s.Signup, db: DB, request: Request, response: Response):
+    """가입과 동시에 로그인 쿠키를 발급한다"""
+    user, tokens = auth.signup(db, body.name, body.email, body.password, request.client.host if request.client else "")
+    set_auth_cookies(response, tokens)
+    return _d(user)
 
 
 @api.post("/auth/login")
@@ -44,14 +60,22 @@ def refresh(request: Request, db: DB, response: Response):
 
 
 @api.post("/auth/logout", status_code=204)
-def logout(user_id: UserId, db: DB, request: Request, response: Response):
-    auth.logout(db, user_id, request.cookies.get(ACCESS))
+def logout(db: DB, request: Request, response: Response):
+    """액세스가 만료돼도 리프레시 쿠키로 세션을 끝낼 수 있게 인증을 요구하지 않는다"""
+    auth.logout(db, request.cookies.get(ACCESS), request.cookies.get(REFRESH))
     clear_auth_cookies(response)
 
 
 @api.get("/me")
 def me(user_id: UserId, db: DB):
     return _d(auth.me(db, user_id))
+
+
+@api.delete("/me", status_code=204)
+def withdraw(body: s.Withdraw, user_id: UserId, db: DB, response: Response):
+    """계정 탈퇴. 비밀번호 재확인"""
+    auth.withdraw(db, user_id, body.password)
+    clear_auth_cookies(response)
 
 
 # --- 병동·가입 (AUTH-03~07)
@@ -68,6 +92,17 @@ def my_ward(user_id: UserId, db: DB):
 @api.post("/ward-membership-requests", status_code=201)
 def request_membership(body: s.JoinRequest, user_id: UserId, db: DB):
     return _d(wards.request_join(db, user_id, body.join_code))
+
+
+@api.post("/wards/me/membership/leave", status_code=204)
+def leave_ward(user_id: UserId, db: DB):
+    wards.leave(db, user_id)
+
+
+@api.delete("/ward-membership-requests/me", status_code=204)
+def cancel_membership_request(user_id: UserId, db: DB):
+    """대기 중인 내 가입 신청 취소"""
+    wards.cancel_request(db, user_id)
 
 
 @api.get("/wards/me/membership-requests")
@@ -109,6 +144,22 @@ def transfer_head(body: s.Transfer, user_id: UserId, db: DB):
 @api.post("/wards/me/nurses", status_code=201)
 def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
     return _d(nurses.create(db, user_id, body.model_dump()))
+
+
+@api.post("/wards/me/nurses/{nurse_id}/invite-code", status_code=201)
+def issue_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(wards.issue_invite(db, user_id, nurse_id))
+
+
+@api.post("/wards/me/nurses/{nurse_id}/unlink-account")
+def unlink_account(nurse_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
+    """잘못 연결된 계정 해제. 행은 유지되고 새 초대 코드를 발급할 수 있다"""
+    return _d(wards.unlink_account(db, user_id, nurse_id, body.reason if body else None))
+
+
+@api.delete("/wards/me/nurses/{nurse_id}/invite-code", status_code=204)
+def revoke_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    wards.revoke_invite(db, user_id, nurse_id)
 
 
 @api.get("/wards/me/nurses")
@@ -212,6 +263,31 @@ def confirm(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Confirm | N
 @api.post("/wards/me/schedules/{schedule_id}/confirmation-cancellations")
 def cancel_confirmation(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
     return _d(schedules.cancel_confirmation(db, user_id, schedule_id, body.reason if body else None))
+
+
+@api.get("/wards/me/schedules/{schedule_id}/export.xlsx")
+def export_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    data, filename = excel.export_schedule(db, user_id, schedule_id)
+    return Response(data, media_type=excel.XLSX, headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@api.post("/wards/me/schedules/{schedule_id}/import-previews", status_code=202)
+def import_preview(schedule_id: uuid.UUID, file: UploadFile, user_id: UserId, db: DB):
+    return _d(excel.create_preview(db, user_id, schedule_id, _upload(file)))
+
+
+@api.patch("/wards/me/schedules/{schedule_id}/import-previews/{preview_id}")
+def patch_import_preview(schedule_id: uuid.UUID, preview_id: uuid.UUID, body: s.ImportMappingPatch, user_id: UserId,
+                         db: DB):
+    nm = [(x.row_number, x.nurse_id) for x in body.nurse_mappings or []]
+    dm = [(x.raw, x.duty_code) for x in body.duty_mappings or []]
+    return _d(excel.update_preview(db, user_id, schedule_id, preview_id, nm, dm))
+
+
+@api.post("/wards/me/schedules/{schedule_id}/import-previews/{preview_id}/apply")
+def apply_import(schedule_id: uuid.UUID, preview_id: uuid.UUID, body: s.BaseVersion, user_id: UserId, db: DB,
+                 lock: LockToken = None):
+    return _d(excel.apply_preview(db, user_id, schedule_id, preview_id, body.base_version, lock))
 
 
 @api.post("/wards/me/schedules/{schedule_id}/lock", status_code=201)
@@ -328,3 +404,34 @@ def get_off_deadline(year_month: str, user_id: UserId, db: DB):
 def put_off_deadline(year_month: str, body: s.OffDeadlinePut, user_id: UserId, db: DB):
     ym = parse_month(year_month).strftime("%Y-%m")
     return _d(off_deadlines.put(db, user_id, ym, body.closes_at, body.manually_closed, body.version))
+
+
+# --- 알림 (NOTI). 본인 것만
+@api.get("/me/notifications")
+def my_notifications(user_id: UserId, db: DB, p: Page, unreadOnly: bool = False,  # noqa: N803
+                     type: NotificationType | None = None):  # noqa: A002
+    return notifications.list_(db, user_id, unreadOnly, type, p.page, p.size)
+
+
+@api.patch("/me/notifications/{notification_id}")
+def patch_notification(notification_id: uuid.UUID, body: s.NotificationPatch, user_id: UserId, db: DB):
+    return _d(notifications.mark(db, user_id, notification_id, body.read))
+
+
+@api.get("/me/notification-settings")
+def notification_settings(user_id: UserId, db: DB):
+    return _d(notifications.settings(db, user_id))
+
+
+@api.patch("/me/notification-settings")
+def patch_notification_settings(body: s.NotificationSettingsPatch, user_id: UserId, db: DB):
+    changes = {k: v for k, v in body.model_dump(by_alias=True, exclude_unset=True).items() if v is not None}
+    return _d(notifications.update_settings(db, user_id, changes))
+
+
+# --- 감사 로그 (SEC-03)
+@api.get("/wards/me/audit-logs")
+def audit_logs(user_id: UserId, db: DB, p: Page, frm: datetime | None = Query(None, alias="from"),
+               to: datetime | None = None, actorId: uuid.UUID | None = None,  # noqa: N803
+               actionType: str | None = None):  # noqa: N803
+    return audit.search(db, user_id, _utc(frm), _utc(to), actorId, actionType, p.page, p.size)
