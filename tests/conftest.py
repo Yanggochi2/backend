@@ -11,6 +11,7 @@ os.environ["COOKIE_SECURE"] = "false"
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
+from app.business import auth  # noqa: E402
 from app.business.common import today_kst  # noqa: E402
 from app.main import app  # noqa: E402
 
@@ -42,11 +43,17 @@ class Api:
         return r.json()["data"]
 
 
+@pytest.fixture(autouse=True)
+def _reset_signup_limit():
+    """테스트 클라이언트는 모두 같은 IP라 가입 제한을 테스트마다 초기화한다"""
+    auth._signups.hits.clear()
+
+
 def user(name="사용자") -> Api:
-    """가입 + 로그인한 사용자. 테스트끼리 겹치지 않게 이메일은 매번 새로"""
-    a, email = Api(), f"{uuid.uuid4().hex[:10]}@x.com"
-    a.data("POST", "/auth/signup", {"name": name, "email": email, "password": "pass1234", "termsAgreed": True})
-    a.data("POST", "/auth/login", {"email": email, "password": "pass1234"})
+    """가입한(= 로그인된) 사용자. 테스트끼리 겹치지 않게 이메일은 매번 새로"""
+    a = Api()
+    a.data("POST", "/auth/signup", {"name": name, "email": f"{uuid.uuid4().hex[:10]}@x.com", "password": "pass1234",
+                                    "termsAgreed": True})
     return a
 
 

@@ -65,6 +65,7 @@ class RequestStatus(StrEnum):
 class AccountStatus(StrEnum):
     ACTIVE = "ACTIVE"
     DISABLED = "DISABLED"
+    WITHDRAWN = "WITHDRAWN"  # 계정 탈퇴. 개인정보는 지우고 행만 남김
 
 
 class GenerationStatus(StrEnum):
@@ -90,6 +91,9 @@ class NotificationType(StrEnum):
     MEMBERSHIP_REJECTED = "MEMBERSHIP_REJECTED"
     DUTY_REMINDER = "DUTY_REMINDER"
     LOCK_TAKEN_OVER = "LOCK_TAKEN_OVER"
+    MEMBER_LEFT = "MEMBER_LEFT"
+    MEMBER_JOINED = "MEMBER_JOINED"  # 초대 코드로 승인 없이 가입 → 수간호사에게 알림
+    MEMBER_UNLINKED = "MEMBER_UNLINKED"  # 수간호사가 계정 연결을 해제 → 그 계정에게 알림
 
 
 class Preset(StrEnum):

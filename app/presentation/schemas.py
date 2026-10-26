@@ -44,6 +44,10 @@ class Login(Body):
     password: NonBlank
 
 
+class Withdraw(Body):
+    password: NonBlank
+
+
 class CreateWard(Body):
     hospital_name: NonBlank
     ward_name: NonBlank
@@ -159,6 +163,21 @@ class BaseVersion(Body):
     base_version: int
 
 
+class NurseMapping(Body):
+    row_number: int
+    nurse_id: uuid.UUID | None
+
+
+class DutyMapping(Body):
+    raw: str
+    duty_code: Duty | None
+
+
+class ImportMappingPatch(Body):
+    nurse_mappings: list[NurseMapping] | None = None
+    duty_mappings: list[DutyMapping] | None = None
+
+
 class WorkRequestCreate(Body):
     type: RequestType
     target_dates: list[date] = Field(min_length=1)
@@ -178,3 +197,15 @@ class OffDeadlinePut(Body):
     closes_at: AwareDatetime | None
     manually_closed: StrictBool = False
     version: StrictInt = Field(ge=0)
+
+
+class NotificationPatch(Body):
+    read: bool
+
+
+class NotificationSettingsPatch(Body):
+    schedule_confirmed: bool | None = None
+    schedule_cancelled: bool | None = None
+    request_result: bool | None = None
+    duty_reminder: bool | None = None
+    web_push: bool | None = None

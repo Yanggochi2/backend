@@ -30,11 +30,17 @@ class User(Base):
 
 
 class SessionToken(Base):
-    """액세스·리프레시 토큰 쌍. DB에는 해시만 저장한다"""
+    """
+    액세스·리프레시·CSRF 토큰 묶음. DB에는 해시만 저장한다.
+    같은 로그인에서 회전으로 이어진 행은 family_id를 공유한다. 회전된 행은 재사용 탐지용으로 만료까지 남긴다
+    """
     __tablename__ = "sessions"
     id: Mapped[PK]
+    family_id: Mapped[uuid.UUID] = mapped_column(index=True)
     access_hash: Mapped[str] = mapped_column(String(64), unique=True)
     refresh_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64))
+    rotated: Mapped[bool] = mapped_column(default=False)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     access_expires_at: Mapped[datetime]
     refresh_expires_at: Mapped[datetime]
@@ -74,6 +80,8 @@ class MembershipRequest(Base):
     ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), index=True)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
     status: Mapped[RequestStatus] = mapped_column(_enum(RequestStatus), default=RequestStatus.PENDING)
+    # JOIN_CODE: 병동 공용 코드 → 승인 대기 / INVITE_CODE: 개인 초대 코드 → 즉시 APPROVED
+    via: Mapped[str] = mapped_column(String(20), default="JOIN_CODE")
     created_at: Mapped[datetime] = mapped_column(default=now)
     processed_at: Mapped[datetime | None]
     processed_by: Mapped[uuid.UUID | None]
@@ -105,6 +113,9 @@ class Nurse(Base):
     affiliation_start: Mapped[date]
     affiliation_end: Mapped[date | None]
     preceptor_of: Mapped[list] = mapped_column(JSON, default=list)  # UUID 문자열
+    # 계정 없이 등록된 간호사에게 주는 1회용 개인 초대 코드. 쓰면 이 행에 계정이 연결된다
+    invite_code: Mapped[str | None] = mapped_column(String(10), unique=True)
+    invite_expires_at: Mapped[datetime | None]
     version: Mapped[int] = mapped_column(default=0)
     __mapper_args__ = {"version_id_col": version}
 
@@ -205,6 +216,21 @@ class GenerationJob(Base):
     relaxations: Mapped[list] = mapped_column(JSON, default=list)
     partial_cells: Mapped[list | None] = mapped_column(JSON)  # [[nurseId, date, duty], ...]
     created_by: Mapped[uuid.UUID]
+
+
+class ImportPreview(Base):
+    """SCH-10 엑셀 가져오기 미리보기. 매핑을 확정한 뒤 반영한다"""
+    __tablename__ = "import_previews"
+    id: Mapped[PK]
+    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"))
+    schedule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("schedules.id"), index=True)
+    rows: Mapped[list] = mapped_column(JSON)
+    cells: Mapped[list] = mapped_column(JSON)
+    nurse_mappings: Mapped[dict] = mapped_column(JSON)  # rowNumber(str) → nurseId 문자열 또는 None(건너뜀)
+    duty_mappings: Mapped[dict] = mapped_column(JSON)  # 엑셀 코드 → dutyCode 또는 None(미배정)
+    applied_at: Mapped[datetime | None]
+    created_by: Mapped[uuid.UUID]
+    created_at: Mapped[datetime] = mapped_column(default=now)
 
 
 class AuditLog(Base):

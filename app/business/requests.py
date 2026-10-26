@@ -109,6 +109,33 @@ def reject(db: Session, user_id: uuid.UUID, request_id: uuid.UUID, reason: str |
     return view(db, r)
 
 
+def withdraw_all(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> int:
+    """탈퇴 시: 대기 중인 신청과 종료일 이후 날짜가 있는 승인 신청을 취소한다. 초안의 AL도 지운다"""
+    n = 0
+    for r in db.scalars(select(WorkRequest).where(WorkRequest.nurse_id == nurse_id, WorkRequest.status.in_(ACTIVE))):
+        future = [d for d in r.dates() if d > end]
+        if r.status == RequestStatus.APPROVED and not future:
+            continue  # 이미 지난 연차·희망은 기록으로 남긴다
+        if r.status == RequestStatus.APPROVED and r.type == RequestType.ANNUAL_LEAVE:
+            schedules.sync_leave(db, ward_id, nurse_id, future, False)
+        past = [d.isoformat() for d in r.dates() if d <= end]
+        if r.status == RequestStatus.APPROVED and past:
+            r.target_dates = past  # 종료일까지 쓴 날짜는 승인 기록으로 남긴다
+        else:
+            r.status = RequestStatus.CANCELLED
+        n += 1
+    return n
+
+
+def cancel_pending(db: Session, nurse_id: uuid.UUID) -> int:
+    """계정 연결 해제 시: 그 계정이 낸 대기 중인 신청을 취소한다 (승인된 신청은 수간호사가 판단한 것이라 둔다)"""
+    rows = db.scalars(select(WorkRequest).where(WorkRequest.nurse_id == nurse_id,
+                                                WorkRequest.status == RequestStatus.PENDING)).all()
+    for r in rows:
+        r.status = RequestStatus.CANCELLED
+    return len(rows)
+
+
 def mine(db: Session, user_id: uuid.UUID, ym: str | None, type_: RequestType | None, status: RequestStatus | None,
          page_no: int, size: int) -> dict:
     m = members.require(db, user_id)
