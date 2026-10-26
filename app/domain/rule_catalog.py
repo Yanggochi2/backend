@@ -12,7 +12,7 @@ class RuleDef:
 
 
 CATALOG = {
-    "COVERAGE": RuleDef("듀티별 필요 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
+    "COVERAGE": RuleDef("듀티별 정확한 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
     "NIGHT_TO_DAY": RuleDef("N 다음날 D 금지", "HARD"),
@@ -20,7 +20,7 @@ CATALOG = {
     "PREGNANT_NIGHT": RuleDef("임신 중 N 금지", "HARD", locked=True),
     "NEW_NIGHT_ALONE": RuleDef("신입 N 지원 인원", "HARD", params={"minExperienced": 1}),
     "OUT_OF_AFFILIATION": RuleDef("소속 기간 밖 배정 금지", "HARD", locked=True),
-    "OFF_TARGET": RuleDef("월 OFF 목표", "SOFT"),
+    "OFF_TARGET": RuleDef("월 OFF 목표", "SOFT", params={"maxDeviation": 1}),
     "WISH_OFF_IGNORED": RuleDef("희망 오프 반영", "SOFT"),
     "WISH_DUTY_IGNORED": RuleDef("희망 근무 반영", "SOFT"),
     "PRECEPTOR_MISMATCH": RuleDef("프리셉터·신입 듀티 일치", "SOFT"),
@@ -40,6 +40,8 @@ def parameters(code: str, supplied: dict) -> dict:
     for key in ("max", "minExperienced"):
         if key in values and (type(values[key]) is not int or not 1 <= values[key] <= 31):
             raise ValueError(f"{key}는 1~31 정수여야 합니다")
+    if "maxDeviation" in values and (type(values["maxDeviation"]) is not int or not 0 <= values["maxDeviation"] <= 31):
+        raise ValueError("maxDeviation은 0~31 정수여야 합니다")
     if "allowedDuties" in values:
         duties = values["allowedDuties"]
         if (not isinstance(duties, list) or not duties or any(x not in ("D", "E", "N") for x in duties)

@@ -29,7 +29,7 @@ def test_detects_hard_violations():
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님
     assert ids(validate(Roster(OCT, ns, cells, rules, 0))) == {
-        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY"}
+        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "COVERAGE"}
     alone = Roster(OCT, [ns[1]], {2: {START: Duty.N}}, rules, 0)
     assert "NEW_NIGHT_ALONE" in ids(validate(alone))
 
@@ -57,6 +57,37 @@ def test_generator_keeps_fixed_cells_and_counts_them_toward_coverage():
     cells = generate(Roster(OCT, ns, {1: {START: Duty.N}}, rules, 0))
     assert cells[1][START] == Duty.N
     assert sum(1 for n in ns if cells[n.id].get(START) == Duty.N) == 2, "고정 셀 포함 필요 인원만큼만 배정"
+
+
+def test_coverage_requires_exact_headcount_and_reports_overstaffing():
+    rules = Rules.preset(Preset.STANDARD, 1, 0, 0)
+    ns = [nurse(1), nurse(2)]
+    roster = Roster(OCT, ns, {1: {START: Duty.D}, 2: {START: Duty.D}}, rules, 15)
+    violation = next(v for v in validate(roster) if v.rule_id == "COVERAGE" and v.date == START)
+    assert violation.severity == Severity.HARD
+    assert "초과" in violation.message
+
+
+def test_off_target_detects_both_excess_and_shortage():
+    rules = Rules.preset(Preset.STANDARD, 0, 0, 0)
+    ns = [nurse(1), nurse(2)]
+    days = Roster(OCT, ns, {}, rules, 10).days()
+    cells = {
+        1: {d: Duty.O if i < 13 else Duty.D for i, d in enumerate(days)},
+        2: {d: Duty.O if i < 7 else Duty.D for i, d in enumerate(days)},
+    }
+    violations = [v for v in validate(Roster(OCT, ns, cells, rules, 10)) if v.rule_id == "OFF_TARGET"]
+    assert {v.nurse_id for v in violations} == {1, 2}
+    assert any("과다" in v.message for v in violations)
+    assert any("부족" in v.message for v in violations)
+
+
+def test_generator_distributes_off_within_target_tolerance():
+    ns = [nurse(i) for i in range(1, 11)]
+    rules = Rules.preset(Preset.STANDARD, 2, 2, 1)
+    roster = Roster(OCT, ns, {}, rules, 16)
+    result = roster.with_cells(generate(roster))
+    assert not [v for v in validate(result) if v.rule_id in {"COVERAGE", "OFF_TARGET"}]
 
 
 def test_consecutive_rules_span_month_boundary():

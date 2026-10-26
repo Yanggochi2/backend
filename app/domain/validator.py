@@ -33,15 +33,24 @@ def validate(r: Roster) -> list[Violation]:
                 if x and x.is_work and other and other.is_work and x != other:
                     out.append(Violation(SOFT, "PRECEPTOR_MISMATCH", n.id, d, x, "담당 신입과 듀티 불일치"))
 
-        if n.affiliated(days[0]) and n.affiliated(days[-1]) and offs < r.off_target:
-            out.append(Violation(SOFT, "OFF_TARGET", n.id, None, None, f"OFF {offs} / 목표 {r.off_target}"))
+        tolerance = rules.parameter("OFF_TARGET", "maxDeviation")
+        if n.affiliated(days[0]) and n.affiliated(days[-1]) and abs(offs - r.off_target) > tolerance:
+            direction = "과다" if offs > r.off_target else "부족"
+            out.append(Violation(
+                SOFT, "OFF_TARGET", n.id, None, None,
+                f"OFF {direction}: {offs}일 / 목표 {r.off_target}일 (허용 편차 ±{tolerance}일)",
+            ))
 
     for d in days:
         count = coverage(r, d)
         for duty in (Duty.D, Duty.E, Duty.N):
             need, have = rules.required(duty), count.get(duty, 0)
-            if have < need:
-                out.append(Violation(HARD, "COVERAGE", None, d, duty, f"{duty} 필요 {need}명 / 배정 {have}명"))
+            if have != need:
+                direction = "부족" if have < need else "초과"
+                out.append(Violation(
+                    HARD, "COVERAGE", None, d, duty,
+                    f"{duty} 인원 {direction}: 필요 {need}명 / 배정 {have}명",
+                ))
     return [replace(v, severity=rules.severity_for(v.rule_id)) for v in out if rules.enabled(v.rule_id)]
 
 

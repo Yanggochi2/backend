@@ -473,16 +473,36 @@ def _readiness(db: Session, s: Schedule, r: Roster) -> dict:
 
 def _off_target_view(db: Session, s: Schedule) -> dict:
     holidays = len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month)))
-    return {"yearMonth": s.year_month, "targetCount": _off_target(db, s), "autoCount": holidays + 1,
+    automatic = _automatic_off_target(db, s)
+    return {"yearMonth": s.year_month, "targetCount": _off_target(db, s), "autoCount": automatic,
             "holidayCount": holidays, "source": "AUTO" if s.off_target is None else "MANUAL",
             "reason": s.off_target_reason}
 
 
 def _off_target(db: Session, s: Schedule) -> int:
-    """RULE-03: 공휴일 수 + 1. ponytail: 주휴일 포함 여부 🔶 미확정이라 공휴일만 센다"""
+    """필요 근무 슬롯과 소속 인원 일수로 달성 가능한 평균 OFF 목표를 계산한다."""
     if s.off_target is not None:
         return s.off_target
-    return len(rules.holiday_dates(db, s.ward_id, parse_month(s.year_month))) + 1
+    return _automatic_off_target(db, s)
+
+
+def _automatic_off_target(db: Session, s: Schedule) -> int:
+    first = parse_month(s.year_month)
+    last = month_end(first)
+    month_days = (last - first).days + 1
+    nurses = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == s.ward_id))
+              if n.affiliation_start <= last and (n.affiliation_end is None or n.affiliation_end >= first)]
+    if not nurses:
+        return 0
+    available_days = sum(
+        (min(n.affiliation_end or last, last) - max(n.affiliation_start, first)).days + 1
+        for n in nurses
+    )
+    required_work = month_days * sum(rules.staffing(db, s.ward_id).values())
+    available_off = max(0, available_days - required_work)
+    staffing_target = (available_off + len(nurses) // 2) // len(nurses)
+    holiday_target = len(rules.holiday_dates(db, s.ward_id, first)) + 1
+    return min(month_days, max(holiday_target, staffing_target))
 
 
 def _grant_lock(db: Session, s: Schedule, user_id: uuid.UUID) -> dict:
