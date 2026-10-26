@@ -52,6 +52,9 @@ def seed(db) -> None:
         wards.create(db, head.id, "한빛대학병원", "7병동", {"D": 7, "E": 6, "N": 5}, Preset.STANDARD)
     ward_id = members.membership(db, head.id).ward_id
     start = today_kst()
+    # 개설일(오늘)이 아니라 1일부터 소속으로 둔다 (이번 달 근무표에 온전히 들어가게)
+    hn = members.membership(db, head.id)
+    hn.joined_at = hn.affiliation_start = start.replace(day=1)
 
     for name, email in ACCOUNTS:
         u = _user(db, name, email)
