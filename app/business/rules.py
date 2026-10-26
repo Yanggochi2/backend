@@ -27,7 +27,16 @@ def seed(db: Session, ward_id: uuid.UUID, preset: Preset, staff: dict) -> None:
 
 
 def rows(db: Session, ward_id: uuid.UUID) -> dict[str, WardRule]:
-    return {r.code: r for r in db.scalars(select(WardRule).where(WardRule.ward_id == ward_id))}
+    """규칙이 추가되기 전에 만든 병동에는 새 규칙 행이 없다. 읽을 때 기본값으로 채운다 (마이그레이션 불필요)"""
+    rs = {r.code: r for r in db.scalars(select(WardRule).where(WardRule.ward_id == ward_id))}
+    missing = [code for code in CATALOG if code not in rs]
+    if missing and "COVERAGE" in rs:
+        for code in missing:
+            rs[code] = WardRule(ward_id=ward_id, code=code,
+                                **_preset_values(Preset.STANDARD, code, rs["COVERAGE"].parameters))
+            db.add(rs[code])
+        db.flush()
+    return rs
 
 
 def load(db: Session, ward_id: uuid.UUID) -> Rules:
@@ -120,7 +129,7 @@ def _check_params(code: str, params) -> dict:
 
 def _preset_values(preset: Preset, code: str, staff: dict) -> dict:
     d = CATALOG[code]
-    return {"enabled": not (preset == Preset.MINIMAL and code in _MINIMAL_OFF), "severity": d.severity,
+    return {"enabled": d.enabled and not (preset == Preset.MINIMAL and code in _MINIMAL_OFF), "severity": d.severity,
             "parameters": dict(staff) if code == "COVERAGE" else dict(d.params)}
 
 

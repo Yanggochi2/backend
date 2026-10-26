@@ -12,6 +12,7 @@ dependencies = [
     "bcrypt",
     "openpyxl",
     "python-multipart",
+    "ortools>=9.15.6755",
 ]
 
 [dependency-groups]

@@ -25,11 +25,12 @@ def test_detects_hard_violations():
     rules = Rules.preset(Preset.STANDARD, 0, 0, 0)
     rules.settings["MAX_CONSECUTIVE_NIGHTS"] = replace(rules.settings["MAX_CONSECUTIVE_NIGHTS"], parameters={"max": 1})
     rules.settings["MAX_CONSECUTIVE_WORK"] = replace(rules.settings["MAX_CONSECUTIVE_WORK"], parameters={"max": 31})
+    rules.settings["CHARGE_DAY_ONLY"] = replace(rules.settings["CHARGE_DAY_ONLY"], parameters={"allowedDuties": ["D"]})
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
-    # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님
+    # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님. 3번의 N N D는 역순환이면서 야간 후 휴식 부족
     assert ids(validate(Roster(OCT, ns, cells, rules, 0))) == {
-        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "COVERAGE"}
+        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "NIGHT_REST", "COVERAGE"}
     alone = Roster(OCT, [ns[1]], {2: {START: Duty.N}}, rules, 0)
     assert "NEW_NIGHT_ALONE" in ids(validate(alone))
 
@@ -38,6 +39,9 @@ def test_generator_satisfies_hard_rules_when_staff_is_enough():
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     ns += [nurse(i) for i in range(4, 15)]
     rules = Rules.preset(Preset.STANDARD, 3, 2, 2)
+    # 차지 1명뿐이라 근무마다 차지·고연차는 끈다
+    for code in ("CHARGE_EVERY_SHIFT", "SENIOR_EVERY_SHIFT"):
+        rules.settings[code] = replace(rules.settings[code], enabled=False)
     cells = generate(Roster(OCT, ns, {5: {day(9): Duty.AL}}, rules, 0))
     out = Roster(OCT, ns, cells, rules, 0)
     assert out.cell(5, day(9)) == Duty.AL, "연차는 유지"

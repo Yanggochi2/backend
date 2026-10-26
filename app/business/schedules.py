@@ -526,7 +526,9 @@ def _automatic_off_target(db: Session, s: Schedule) -> int:
     required_work = month_days * sum(rules.staffing(db, s.ward_id).values())
     available_off = max(0, available_days - required_work)
     staffing_target = (available_off + len(nurses) // 2) // len(nurses)
-    holiday_target = len(rules.holiday_dates(db, s.ward_id, first)) + 1
+    # 최솟값 = 주말(토·일) + 평일 공휴일 + 1(보건휴가). 주 5일제라 토·일은 쉬는 날로 센다
+    weekends = {first + timedelta(days=i) for i in range(month_days) if (first + timedelta(days=i)).weekday() >= 5}
+    holiday_target = len(weekends | rules.holiday_dates(db, s.ward_id, first)) + 1
     return min(month_days, max(holiday_target, staffing_target))
 
 

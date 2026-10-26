@@ -31,6 +31,7 @@ class DutyRole(StrEnum):
     PRECEPTOR = "PRECEPTOR"
     NEW = "NEW"
     GENERAL = "GENERAL"
+    NIGHT_ONLY = "NIGHT_ONLY"  # 나이트 전담: N과 OFF만, 월 나이트 15일 이내 (복지부 야간근무 가이드라인)
 
 
 class NurseStatus(StrEnum):
@@ -109,28 +110,40 @@ class RuleSetting:
     parameters: dict = field(default_factory=dict)
 
 
+NIGHT_ONLY_MAX_NIGHTS = 15  # 나이트 전담 월 나이트 상한
+SENIOR_ROLES = frozenset({DutyRole.CHARGE, DutyRole.PRECEPTOR})  # 근무마다 1명 이상 있어야 하는 고연차
+
+
 @dataclass(frozen=True)
 class Rules:
     """규칙 코드별 설정. 생성기와 검증기가 같은 파라미터와 심각도를 사용한다."""
     settings: dict[str, RuleSetting]
 
+    def setting(self, code: str) -> RuleSetting:
+        """나중에 카탈로그에 추가된 규칙은 저장된 설정이 없을 수 있다 → 카탈로그 기본값"""
+        if code in self.settings:
+            return self.settings[code]
+        from app.domain.rule_catalog import CATALOG
+        d = CATALOG[code]
+        return RuleSetting(d.enabled, Severity(d.severity), dict(d.params))
+
     def enabled(self, code: str) -> bool:
-        return self.settings[code].enabled
+        return self.setting(code).enabled
 
     def enforced(self, code: str) -> bool:
-        return self.enabled(code) and self.settings[code].severity == Severity.HARD
+        return self.enabled(code) and self.setting(code).severity == Severity.HARD
 
     def parameter(self, code: str, key: str):
-        return self.settings[code].parameters[key]
+        return self.setting(code).parameters[key]
 
     def severity_for(self, code: str) -> Severity:
-        return self.settings[code].severity
+        return self.setting(code).severity
 
     @staticmethod
     def preset(p: Preset, d: int, e: int, n: int) -> "Rules":
         from copy import deepcopy
         from app.domain.rule_catalog import CATALOG, MINIMAL_OFF
-        return Rules({code: RuleSetting(not (p == Preset.MINIMAL and code in MINIMAL_OFF),
+        return Rules({code: RuleSetting(definition.enabled and not (p == Preset.MINIMAL and code in MINIMAL_OFF),
                                         Severity(definition.severity),
                                         {"D": d, "E": e, "N": n} if code == "COVERAGE" else deepcopy(definition.params))
                       for code, definition in CATALOG.items()})
