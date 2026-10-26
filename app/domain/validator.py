@@ -65,8 +65,8 @@ def validate(r: Roster) -> list[Violation]:
                     out.append(Violation(SOFT, "PRECEPTOR_MISMATCH", n.id, d, x, "담당 신입과 듀티 불일치"))
             prev = x
 
-        if n.affiliated(days[0]) and n.affiliated(days[-1]) and offs < r.off_target:
-            out.append(Violation(SOFT, "OFF_TARGET", n.id, None, None, f"OFF {offs} / 목표 {r.off_target}"))
+        if n.affiliated(days[0]) and n.affiliated(days[-1]) and offs < off_target(r, n):
+            out.append(Violation(SOFT, "OFF_TARGET", n.id, None, None, f"OFF {offs} / 목표 {off_target(r, n)}"))
         month_nights = sum(1 for d in days if r.cell(n.id, d) == Duty.N)
         limit = NIGHT_ONLY_MAX_NIGHTS if n.duty_role == DutyRole.NIGHT_ONLY else rules.max_monthly_nights
         if month_nights > limit:
@@ -95,6 +95,13 @@ def validate(r: Roster) -> list[Violation]:
                     out.append(Violation(HARD, "NEW_NIGHT_ALONE", n.id, d, Duty.N, "신입 N 단독 배치"))
     # RULE-01: 병동 설정으로 꺼진 규칙(기본 꺼짐 포함)은 빼고, 심각도를 바꾼 규칙은 덮어쓴다
     return [replace(v, severity=sev) for v in out if (sev := rules.mode(v.rule_id)) is not None]
+
+
+def off_target(r: Roster, n) -> int:
+    """간호사의 월 OFF 목표. 나이트 전담은 나이트(=근무일)가 월 15회를 넘지 않도록 그 달 일수 - 15 이상"""
+    if n.duty_role == DutyRole.NIGHT_ONLY and r.off_target > 0:
+        return max(r.off_target, len(r.days()) - NIGHT_ONLY_MAX_NIGHTS)
+    return r.off_target
 
 
 def has_role(r: Roster, roles) -> bool:

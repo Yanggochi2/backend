@@ -1,6 +1,6 @@
 """
 GEN-01·02·04 자동 생성 작업.
-ponytail: CP-SAT 생성기를 요청 안에서 시간 제한(기본 10초)까지 동기 실행하고 끝난 작업(202)을 돌려준다.
+ponytail: CP-SAT 생성기를 요청 안에서 시간 제한(기본 30초)까지 동기 실행하고 끝난 작업(202)을 돌려준다.
 QUEUED·RUNNING·중단은 관찰되지 않는다. 진행률·중단이 필요하면 작업 큐 + GENERATING 상태로 전환 (Yanggochi2/backend#25)
 """
 import json

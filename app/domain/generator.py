@@ -7,42 +7,79 @@ GEN-01. OR-Tools CP-SAT으로 근무표를 편성한다. 규칙 기준: docs/sup
 - 고정 칸끼리만으로 이미 어긋나는 구간(지난달 말과 이어지는 구간 등)은 제약에서 뺀다. 그 위반은 검증기가 보고한다
 """
 import os
+import time
 from datetime import date, timedelta
 
 from ortools.sat.python import cp_model
 
 from app.domain import greedy
 from app.domain.model import NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Cells, Duty, DutyRole, NurseStatus, Roster, Severity
-from app.domain.validator import has_role
+from app.domain.validator import has_role, off_target
 
 SHIFTS = (Duty.D, Duty.E, Duty.N, Duty.O)
 COVERAGE_WEIGHT = 10_000
 NEW_ALONE_WEIGHT = 20_000  # 신입 혼자 야간보다 인원 부족으로 남기는 편이 낫다
 SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
-WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": 30, "NIGHT_OFF_DAY": 20,
+# OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
+WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
            "WISH_DUTY_IGNORED": 20, "WEEKLY_REST": 15, "ISOLATED_SHIFT": 10, "SHIFT_BLOCK": 5,
            "PRECEPTOR_MISMATCH": 5}
 FAIRNESS_WEIGHT = 10
+# 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
+SURPLUS_WEIGHT = {Duty.D: 1, Duty.E: 3}
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
 LOOKBACK_DAYS = 7  # 지난달 말 근무를 이어서 볼 일수 (연속 근무 최대 5일 + 여유)
 WORK, REST = "WORK", "REST"
 SKIP = object()  # 꺼진 규칙
 # 탐색 시간 기본값(초). 테스트는 짧게 둔다
-DEFAULT_SECONDS = float(os.getenv("GENERATION_DEFAULT_SECONDS", "10"))
+DEFAULT_SECONDS = float(os.getenv("GENERATION_DEFAULT_SECONDS", "30"))
+
+
+FOUND = (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
 
 def generate(r: Roster, max_seconds: float | None = None) -> Cells:
+    """
+    두 단계로 푼다. 1단계(시간의 30%)는 하드 규칙(큰 감점)만 줄여 위반 없는 해를 빨리 찾고,
+    2단계는 그 해를 시작점으로 소프트 규칙까지 최적화한다. 한 번에 풀면 소프트 감점에 묻혀 하드 위반이 늦게 사라진다
+    """
+    total = max_seconds or DEFAULT_SECONDS
     model = _Model(r)
     model.build()
-    # 그리디 결과를 시작점으로 준다. 짧은 시간 제한에서도 첫 해를 바로 찾고, 실패 시 대체 결과로도 쓴다
-    fallback = greedy.generate(r)
-    model.hint(fallback)
+    # 솔버가 해를 못 찾으면 그리디 결과를 쓴다. 시작점은 실무형 순환 패턴 (패턴이 깔끔해 다듬을 것이 적다)
+    best = greedy.generate(r)
+    model.hint(_rotation_hint(r))
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = max_seconds or DEFAULT_SECONDS
     solver.parameters.num_workers = 8
-    if solver.Solve(model.m) not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        return fallback
-    return model.cells(solver)
+    deadline = time.monotonic() + total
+    for minimum, limit in ((SOFTENED_WEIGHT, total * 0.3), (0, None)):
+        model.m.Minimize(sum(w * e for w, e in model.cost if w >= minimum))
+        # 1단계가 일찍 끝나면 남은 시간을 모두 2단계에 쓴다
+        solver.parameters.max_time_in_seconds = max(0.5, limit or deadline - time.monotonic())
+        if solver.Solve(model.m) in FOUND:
+            best = model.cells(solver)
+            model.hint(best)
+    return best
+
+
+ROTATION = (Duty.D, Duty.D, Duty.E, Duty.E, Duty.O, Duty.O, Duty.N, Duty.N, Duty.O, Duty.O)
+NIGHT_ROTATION = (Duty.N, Duty.N, Duty.N, Duty.O, Duty.O)
+
+
+def _rotation_hint(r: Roster) -> Cells:
+    """간호사마다 시작점을 엇갈린 순환 패턴. 나이트 전담은 N N N O O, 임신 중이면 N 자리를 D로"""
+    out: Cells = {}
+    for k, n in enumerate(r.nurses):
+        cycle = NIGHT_ROTATION if n.duty_role == DutyRole.NIGHT_ONLY else ROTATION
+        row = {}
+        for i, d in enumerate(r.days()):
+            x = cycle[(i + k) % len(cycle)]
+            if x == Duty.N and (n.status == NurseStatus.PREGNANT or n.duty_role == DutyRole.CHARGE
+                                and r.rules.enforced("CHARGE_DAY_ONLY")):
+                x = Duty.D
+            row[d] = x
+        out[n.id] = row
+    return out
 
 
 def _neg(lit):
@@ -132,7 +169,6 @@ class _Model:
             self._nurse_soft(n)
         self._coverage()
         self._fairness()
-        self.m.Minimize(sum(w * e for w, e in self.cost))
 
     def _nurse_hard(self, n):
         rules, t = self.rules, self.timeline
@@ -181,8 +217,14 @@ class _Model:
         if w is not SKIP:
             limit = NIGHT_ONLY_MAX_NIGHTS if n.duty_role == DutyRole.NIGHT_ONLY else self.rules.max_monthly_nights
             self.at_most(self.count(n, days, Duty.N), limit, w, len(days))
-        if n.affiliated(days[0]) and n.affiliated(days[-1]):
-            self.at_least(self.count(n, days, REST), r.off_target, self.weight("OFF_TARGET"))
+        if n.affiliated(days[0]) and n.affiliated(days[-1]) and r.off_target > 0:
+            # OFF는 목표 개수에 맞춘다: 모자라도, 남아도 감점 (남는 인력은 OFF가 아니라 근무로 돌린다)
+            rest = self.count(n, days, REST)
+            w = self.weight("OFF_TARGET")
+            target = off_target(r, n)
+            self.at_least(rest, target, w)
+            if w is not SKIP:
+                self.at_most(rest, target, w, len(days))
         w_nod, w_iso, w_blk = self.weight("NIGHT_OFF_DAY"), self.weight("ISOLATED_SHIFT"), self.weight("SHIFT_BLOCK")
         for d in days:
             if self.known(n, d - one) and self.known(n, d - 2 * one):
@@ -239,10 +281,14 @@ class _Model:
             on = [n for n in r.nurses if n.affiliated(d)]
             for x in (Duty.D, Duty.E, Duty.N):
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)
-                self.at_least(assigned, r.rules.required(x), w)
-                # 필요 인원보다 많이 넣지 않는다 (고정 칸이 이미 더 많으면 그 수까지)
+                need = r.rules.required(x)
+                self.at_least(assigned, need, w)
                 fixed = sum(1 for n in on if (n.id, d) not in self.free and self.const(n, d) == x)
-                self.m.Add(assigned <= max(r.rules.required(x), fixed))
+                if x == Duty.N:
+                    # 나이트는 필요 인원만 (고정 칸이 이미 더 많으면 그 수까지)
+                    self.m.Add(assigned <= max(need, fixed))
+                else:
+                    self.at_most(assigned, need, SURPLUS_WEIGHT[x], len(on))
             for code, roles in (("CHARGE_EVERY_SHIFT", {DutyRole.CHARGE}), ("SENIOR_EVERY_SHIFT", SENIOR_ROLES)):
                 if not needs[code]:
                     continue
@@ -279,6 +325,7 @@ class _Model:
             self.cost.append((FAIRNESS_WEIGHT, hi - lo))
 
     def hint(self, cells: Cells):
+        self.m.ClearHints()
         for (nurse_id, d), vs in self.free.items():
             x = cells.get(nurse_id, {}).get(d, Duty.O)
             for s, v in vs.items():

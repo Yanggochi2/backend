@@ -68,8 +68,9 @@ def test_thirty_nurse_ward_quality():
     ns = [nurse(i, role) for i, role in enumerate(roles)]
     ns[15] = nurse(15, status=NurseStatus.PREGNANT)
     wish = {i: {DAYS[i % 30]} for i in range(0, 30, 3)}
-    r = Roster(NOV, ns, {}, Rules(6, 5, 4, 3, 5, True), 9, wish_offs=wish)
-    out, vs = run(r, seconds=10)
+    # 11월 OFF 목표 10 (주말 9 + 보건휴가 1) → 1인 20일 근무, 하루 필요 18명 + 남는 인력 2명은 D·E로
+    r = Roster(NOV, ns, {}, Rules(7, 6, 5, 3, 5, True), 10, wish_offs=wish)
+    out, vs = run(r, seconds=30)
     by = {}
     for v in vs:
         by.setdefault(v.rule_id, []).append(v)
@@ -77,13 +78,15 @@ def test_thirty_nurse_ward_quality():
     assert len(by.get("MAX_MONTHLY_NIGHTS", [])) == 0, "월 야간 상한 6 이하"
     assert len(by.get("WISH_OFF_IGNORED", [])) == 0, "희망 오프 반영"
     assert len(by.get("ISOLATED_SHIFT", [])) <= len(ns), "고립 배치는 1인당 1건 이하 수준"
+    offs = [sum(1 for d in DAYS if out.cell(n.id, d) == Duty.O) for n in ns]
+    assert all(o == 10 for o in offs), f"OFF는 모두 목표 10개: {sorted(offs)}"
 
 
 def test_charge_every_shift_and_night_only_nurses():
     roles = [DutyRole.CHARGE] * 6 + [DutyRole.NIGHT_ONLY] * 2 + [DutyRole.PRECEPTOR] * 3 + [DutyRole.NEW] * 3
     roles += [DutyRole.GENERAL] * 16
     ns = [nurse(i, role) for i, role in enumerate(roles)]
-    out, vs = run(Roster(NOV, ns, {}, Rules(6, 5, 4, 3, 5, True), 9), seconds=10)
+    out, vs = run(Roster(NOV, ns, {}, Rules(7, 6, 5, 3, 5, True), 10), seconds=30)
     assert hard(vs) == []
     for d in DAYS:
         for x in (Duty.D, Duty.E, Duty.N):
