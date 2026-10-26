@@ -68,3 +68,22 @@ def test_off_target_and_soft_acknowledgement():
     h.data("POST", f"/wards/me/schedules/{s['id']}/confirm", {"acknowledgedSoftViolationIds": soft})
     err(h("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": 3}), 409, "SCHEDULE_CONFIRMED")
     err(h("PUT", f"/wards/me/holidays/{NEXT.isoformat()}", {"isHoliday": True}), 422, "DATE_OUT_OF_SCOPE")
+
+
+def test_rules_added_later_are_backfilled_for_existing_wards():
+    """규칙 목록에 나중에 추가된 규칙은 기존 병동에 행이 없다. 읽을 때 기본값으로 채워진다"""
+    import uuid
+
+    from sqlalchemy import delete
+
+    from app.business.rules import CATALOG
+    from app.persistence.db import SessionLocal
+    from app.persistence.models import WardRule
+    h = ward_head()
+    rid = next(r["id"] for r in h.data("GET", "/wards/me/rules") if r["code"] == "NIGHT_REST")
+    with SessionLocal() as db:
+        db.execute(delete(WardRule).where(WardRule.id == uuid.UUID(rid)))
+        db.commit()
+    rs = {r["code"]: r for r in h.data("GET", "/wards/me/rules")}
+    assert len(rs) == len(CATALOG) and rs["NIGHT_REST"]["severity"] == "HARD" and rs["NIGHT_REST"]["enabled"]
+    assert rs["MAX_MONTHLY_NIGHTS"]["parameters"] == {"max": 6}

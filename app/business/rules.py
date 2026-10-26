@@ -26,7 +26,8 @@ CATALOG = {
     "COVERAGE": RuleDef("듀티별 필요 인원", HARD, params={"D": 0, "E": 0, "N": 0}),
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", HARD, params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", HARD, params={"max": 5}),
-    "NIGHT_TO_DAY": RuleDef("N 다음날 D 금지", HARD),
+    "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", HARD),
+    "NIGHT_REST": RuleDef("야간 2일 연속 후 OFF 2일", HARD),
     "CHARGE_DAY_ONLY": RuleDef("차지 간호사는 D만", HARD),
     "PREGNANT_NIGHT": RuleDef("임신 중 N 금지", HARD, locked=True),
     "NEW_NIGHT_ALONE": RuleDef("신입 N 단독 배치 금지", HARD),
@@ -35,9 +36,13 @@ CATALOG = {
     "WISH_OFF_IGNORED": RuleDef("희망 오프 반영", SOFT),
     "WISH_DUTY_IGNORED": RuleDef("희망 근무 반영", SOFT),
     "PRECEPTOR_MISMATCH": RuleDef("프리셉터·신입 듀티 일치", SOFT),
+    "MAX_MONTHLY_NIGHTS": RuleDef("월 야간 최대 횟수", SOFT, params={"max": 6}),
+    "NIGHT_OFF_DAY": RuleDef("나이트-오프-데이 피하기", SOFT),
+    "ISOLATED_SHIFT": RuleDef("고립된 근무·휴무 피하기", SOFT),
+    "WEEKLY_REST": RuleDef("주마다 연속 휴무 2일", SOFT),
 }
 # MINIMAL 프리셋에서 끄는 규칙
-_MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY"}
+_MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY", "NIGHT_REST"}
 # 매년 같은 날짜인 공휴일. 설·추석·대체공휴일 등은 병동에서 보정(RULE-02)한다
 # ponytail: 음력·대체공휴일 자동 계산 없음. 필요하면 공공데이터 특일 API 연동
 DEFAULT_HOLIDAYS = {(1, 1): "신정", (3, 1): "삼일절", (5, 5): "어린이날", (6, 6): "현충일", (8, 15): "광복절",
@@ -52,7 +57,16 @@ def seed(db: Session, ward_id: uuid.UUID, preset: Preset, staff: dict) -> None:
 
 
 def rows(db: Session, ward_id: uuid.UUID) -> dict[str, WardRule]:
-    return {r.code: r for r in db.scalars(select(WardRule).where(WardRule.ward_id == ward_id))}
+    """규칙이 추가되기 전에 만든 병동에는 새 규칙 행이 없다. 읽을 때 기본값으로 채운다 (마이그레이션 불필요)"""
+    rs = {r.code: r for r in db.scalars(select(WardRule).where(WardRule.ward_id == ward_id))}
+    missing = [code for code in CATALOG if code not in rs]
+    if missing and "COVERAGE" in rs:
+        for code in missing:
+            rs[code] = WardRule(ward_id=ward_id, code=code,
+                                **_preset_values(Preset.STANDARD, code, rs["COVERAGE"].parameters))
+            db.add(rs[code])
+        db.flush()
+    return rs
 
 
 def load(db: Session, ward_id: uuid.UUID) -> Rules:
@@ -60,6 +74,7 @@ def load(db: Session, ward_id: uuid.UUID) -> Rules:
     staff = rs["COVERAGE"].parameters
     return Rules(staff["D"], staff["E"], staff["N"], rs["MAX_CONSECUTIVE_NIGHTS"].parameters["max"],
                  rs["MAX_CONSECUTIVE_WORK"].parameters["max"], rs["NIGHT_TO_DAY"].enabled,
+                 rs["MAX_MONTHLY_NIGHTS"].parameters["max"],
                  {code: r.severity if r.enabled else None for code, r in rs.items()})
 
 
