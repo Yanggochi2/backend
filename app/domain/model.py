@@ -31,6 +31,7 @@ class DutyRole(StrEnum):
     PRECEPTOR = "PRECEPTOR"
     NEW = "NEW"
     GENERAL = "GENERAL"
+    NIGHT_ONLY = "NIGHT_ONLY"  # 나이트 전담: N과 OFF만, 월 나이트 15일 이내 (복지부 야간근무 가이드라인)
 
 
 class NurseStatus(StrEnum):
@@ -102,6 +103,21 @@ class Preset(StrEnum):
     MINIMAL = "MINIMAL"
 
 
+NIGHT_ONLY_MAX_NIGHTS = 15  # 나이트 전담 월 나이트 상한
+SENIOR_ROLES = frozenset({DutyRole.CHARGE, DutyRole.PRECEPTOR})  # 근무마다 1명 이상 있어야 하는 고연차
+# 규칙 코드 → 기본 심각도 (병동 설정이 없을 때). None은 기본 꺼짐. 근거는 docs/superpowers/specs/2026-10-26-cp-sat-generator-design.md
+RULE_DEFAULTS = {
+    "COVERAGE": Severity.HARD, "NIGHT_TO_DAY": Severity.HARD, "MAX_CONSECUTIVE_NIGHTS": Severity.HARD,
+    "NIGHT_REST": Severity.HARD, "MAX_CONSECUTIVE_WORK": Severity.HARD, "PREGNANT_NIGHT": Severity.HARD,
+    "OUT_OF_AFFILIATION": Severity.HARD, "CHARGE_DAY_ONLY": None, "NEW_NIGHT_ALONE": Severity.HARD,
+    "CHARGE_EVERY_SHIFT": Severity.HARD, "SENIOR_EVERY_SHIFT": Severity.HARD, "NIGHT_ONLY_SHIFT": Severity.HARD,
+    "SHIFT_BLOCK": Severity.SOFT,
+    "WISH_OFF_IGNORED": Severity.SOFT, "MAX_MONTHLY_NIGHTS": Severity.SOFT, "OFF_TARGET": Severity.SOFT,
+    "NIGHT_OFF_DAY": Severity.SOFT, "WISH_DUTY_IGNORED": Severity.SOFT, "WEEKLY_REST": Severity.SOFT,
+    "ISOLATED_SHIFT": Severity.SOFT, "PRECEPTOR_MISMATCH": Severity.SOFT,
+}
+
+
 @dataclass(frozen=True)
 class Rules:
     """RULE-01·02 값 + AUTH-00 듀티별 필요 인원"""
@@ -111,12 +127,17 @@ class Rules:
     max_consecutive_nights: int
     max_consecutive_work_days: int
     forbid_night_to_day: bool
-    # RULE-01 규칙 코드 → 심각도. None이면 꺼짐, 없으면 검증기 기본값
+    max_monthly_nights: int = 6
+    # RULE-01 규칙 코드 → 심각도. None이면 꺼짐, 없으면 RULE_DEFAULTS
     severity: dict = field(default_factory=dict, compare=False)
+
+    def mode(self, code: str) -> "Severity | None":
+        """규칙의 현재 심각도. 꺼졌으면 None"""
+        return self.severity[code] if code in self.severity else RULE_DEFAULTS.get(code, Severity.HARD)
 
     def enforced(self, code: str) -> bool:
         """자동 생성이 반드시 지켜야 하는 규칙인지 (켜져 있고 HARD)"""
-        return self.severity.get(code, Severity.HARD) == Severity.HARD
+        return self.mode(code) == Severity.HARD
 
     @staticmethod
     def preset(p: Preset, d: int, e: int, n: int) -> "Rules":
