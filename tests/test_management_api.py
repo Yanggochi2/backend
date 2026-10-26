@@ -83,13 +83,14 @@ def test_charge_role_changes_revalidate_and_do_not_grant_permission():
 def test_catalog_rule_parameters_reach_generation_and_validation():
     h = ward_head(0, 1, 0, preset="MINIMAL")
     catalog = {r["code"]: r for r in h.data("GET", "/wards/me/rule-catalog")}
-    assert catalog["CHARGE_DAY_ONLY"]["defaultParameters"] == {"allowedDuties": ["D"]}
+    assert catalog["CHARGE_DAY_ONLY"]["defaultParameters"] == {"allowedDuties": ["D", "E", "N"]}
     head = h("GET", "/wards/me/nurses").json()["data"][0]
     h.data("PUT", f"/wards/me/nurses/{head['id']}/charge", {"isCharge": True, "version": head["version"]})
     s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
     generation = f"/wards/me/schedules/{s['id']}/generations"
-    assert h.data("POST", generation, {})["status"] == "NO_SOLUTION"
     rule = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "CHARGE_DAY_ONLY")
+    h.data("PATCH", f"/wards/me/rules/{rule['id']}", {"parameters": {"allowedDuties": ["D"]}})
+    assert h.data("POST", generation, {})["status"] == "NO_SOLUTION"
     h.data("PATCH", f"/wards/me/rules/{rule['id']}", {"parameters": {"allowedDuties": ["E"]}})
     assert h.data("POST", generation, {})["status"] == "SUCCEEDED"
     assert all(c["dutyCode"] == "E" for c in h.data("GET", f"/wards/me/schedules/{s['id']}")["cells"])

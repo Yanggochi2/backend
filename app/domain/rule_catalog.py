@@ -9,14 +9,20 @@ class RuleDef:
     severity: str
     locked: bool = False
     params: dict = field(default_factory=dict)
+    enabled: bool = True  # 새 병동의 기본 켜짐
 
 
 CATALOG = {
     "COVERAGE": RuleDef("듀티별 정확한 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
-    "NIGHT_TO_DAY": RuleDef("N 다음날 D 금지", "HARD"),
-    "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D"]}),
+    "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", "HARD"),
+    "NIGHT_REST": RuleDef("야간 2일 연속 후 OFF 2일", "HARD"),
+    # 근무마다 차지 배치와 함께 쓰도록 기본은 D·E·N 모두 허용
+    "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D", "E", "N"]}),
+    "CHARGE_EVERY_SHIFT": RuleDef("근무마다 차지 1명 이상", "HARD"),
+    "SENIOR_EVERY_SHIFT": RuleDef("근무마다 고연차(차지·프리셉터) 1명 이상", "HARD"),
+    "NIGHT_ONLY_SHIFT": RuleDef("나이트 전담은 N만", "HARD", locked=True),
     "PREGNANT_NIGHT": RuleDef("임신 중 N 금지", "HARD", locked=True),
     "NEW_NIGHT_ALONE": RuleDef("신입 N 지원 인원", "HARD", params={"minExperienced": 1}),
     "OUT_OF_AFFILIATION": RuleDef("소속 기간 밖 배정 금지", "HARD", locked=True),
@@ -24,8 +30,14 @@ CATALOG = {
     "WISH_OFF_IGNORED": RuleDef("희망 오프 반영", "SOFT"),
     "WISH_DUTY_IGNORED": RuleDef("희망 근무 반영", "SOFT"),
     "PRECEPTOR_MISMATCH": RuleDef("프리셉터·신입 듀티 일치", "SOFT"),
+    # 근거: docs/superpowers/specs/2026-10-26-cp-sat-generator-design.md (복지부 야간근무 가이드라인, 병원 단협)
+    "MAX_MONTHLY_NIGHTS": RuleDef("월 야간 최대 횟수", "SOFT", params={"max": 6}),
+    "NIGHT_OFF_DAY": RuleDef("나이트-오프-데이 피하기", "SOFT"),
+    "ISOLATED_SHIFT": RuleDef("고립된 근무·휴무 피하기", "SOFT"),
+    "WEEKLY_REST": RuleDef("주마다 연속 휴무 2일", "SOFT"),
+    "SHIFT_BLOCK": RuleDef("같은 근무 2일 이상 이어서", "SOFT"),
 }
-MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY"}
+MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY", "NIGHT_REST"}
 
 
 def parameters(code: str, supplied: dict) -> dict:
