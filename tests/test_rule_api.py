@@ -55,7 +55,8 @@ def test_off_target_and_soft_acknowledgement():
     err(h("GET", f"/wards/me/off-targets/{YM}"), 404, "TARGET_NOT_FOUND")
     s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
     auto = h.data("GET", f"/wards/me/off-targets/{YM}")
-    assert auto["source"] == "AUTO" and auto["targetCount"] == auto["holidayCount"] + 1
+    assert auto["source"] == "AUTO" and auto["targetCount"] == auto["autoCount"]
+    assert auto["targetCount"] > auto["holidayCount"], "실제 필요 근무량으로 달성 가능한 OFF를 계산"
     err(h("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": -1}), 400, "INVALID_TARGET")
     assert h.data("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": 20, "reason": "휴가철"})["source"] == "MANUAL"
     s = fill_rotation(h, s)
