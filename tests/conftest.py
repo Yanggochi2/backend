@@ -86,12 +86,13 @@ def add_nurses(h: Api, count: int, prefix="간호사", **fields) -> list[str]:
 
 def fill_rotation(h: Api, s: dict) -> dict:
     """
-    간호사 5명을 D,E,N,O,O 순환으로 하루씩 밀어 채운다 → 매일 D·E·N 1명씩, 하드 위반 없음.
+    간호사 5명을 D,D,E,E,O,O,N,N,O,O 순환으로 2일씩 밀어 채운다 → 매일 D·E·N 1명씩, 하드 위반 없음.
+    같은 근무 2일 유지·야간 후 OFF 2일·주별 연속 휴무도 지켜 소프트 위반이 생기지 않는다 (30일 달 기준 야간 6회).
     필요 인원 1/1/1 병동에서 자동 생성 없이 확정 가능한 근무표를 만들 때 쓴다
     """
-    pattern = ["D", "E", "N", "O", "O"]
+    pattern = ["D", "D", "E", "E", "O", "O", "N", "N", "O", "O"]
     days = sorted({c["date"] for c in s["cells"]})
-    changes = [{"nurseId": n["id"], "date": d, "dutyCode": pattern[(i + j) % 5]}
+    changes = [{"nurseId": n["id"], "date": d, "dutyCode": pattern[(2 * i + j) % 10]}
                for i, n in enumerate(s["nurses"]) for j, d in enumerate(days)]
     h.data("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": s["version"], "changes": changes})
     return h.data("GET", f"/wards/me/schedules/{s['id']}")

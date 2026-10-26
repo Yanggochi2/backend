@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import date, timedelta
 
 from app.domain.generator import generate
@@ -20,8 +21,12 @@ def day(n):
     return START + timedelta(days=n)
 
 
+# '차지는 D만'(기본 꺼짐)을 켜고, 차지 1명뿐이라 근무마다 차지·고연차 규칙은 끈다
+CHARGE_DAY = {"CHARGE_DAY_ONLY": Severity.HARD, "CHARGE_EVERY_SHIFT": None, "SENIOR_EVERY_SHIFT": None}
+
+
 def test_detects_hard_violations():
-    rules = Rules(0, 0, 0, 1, 31, True)
+    rules = Rules(0, 0, 0, 1, 31, True, severity=CHARGE_DAY)
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님
@@ -35,7 +40,7 @@ def test_detects_hard_violations():
 def test_generator_satisfies_hard_rules_when_staff_is_enough():
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     ns += [nurse(i) for i in range(4, 15)]
-    rules = Rules.preset(Preset.STANDARD, 3, 2, 2)
+    rules = replace(Rules.preset(Preset.STANDARD, 3, 2, 2), severity=CHARGE_DAY)
     cells = generate(Roster(OCT, ns, {5: {day(9): Duty.AL}}, rules, 0))
     out = Roster(OCT, ns, cells, rules, 0)
     assert out.cell(5, day(9)) == Duty.AL, "연차는 유지"
@@ -123,3 +128,18 @@ def test_soft_pattern_rules():
     week = _seq("D", "O", "D", "O", "D", "O", "D", start=4)
     assert "WEEKLY_REST" in ids(_found(week))
     assert "WEEKLY_REST" not in ids(_found(_seq("D", "D", "O", "O", "D", "D", "D", start=4)))
+
+
+def test_shift_block_night_only_and_skill_mix():
+    assert "SHIFT_BLOCK" in ids(_found(_seq("D", "D", "E", "D", "D")))
+    assert "SHIFT_BLOCK" not in ids(_found(_seq("D", "D", "E", "E")))
+    night_only = nurse(1, DutyRole.NIGHT_ONLY)
+    assert "NIGHT_ONLY_SHIFT" in ids(_found(_seq("D"), n=night_only))
+    many = {day(i): Duty.N for i in range(0, 28, 4)} | {day(i + 1): Duty.N for i in range(0, 28, 4)}  # 14회
+    assert "MAX_MONTHLY_NIGHTS" not in ids(_found(many, n=night_only)), "전담은 월 15회까지"
+    # 차지가 있는 병동: 차지 없는 근무는 위반, 차지가 없는 병동은 판단하지 않음
+    rules = Rules(1, 0, 0, 3, 5, True)
+    with_charge = Roster(OCT, [nurse(1, DutyRole.CHARGE), nurse(2)], {2: {START: Duty.D}}, rules, 0)
+    assert {"CHARGE_EVERY_SHIFT", "SENIOR_EVERY_SHIFT"} <= ids(validate(with_charge))
+    without = Roster(OCT, [nurse(2)], {2: {START: Duty.D}}, rules, 0)
+    assert not {"CHARGE_EVERY_SHIFT", "SENIOR_EVERY_SHIFT"} & ids(validate(without))

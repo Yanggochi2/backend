@@ -3,7 +3,8 @@ from collections import Counter
 from dataclasses import replace
 from datetime import date, timedelta
 
-from app.domain.model import Duty, DutyRole, NurseStatus, Roster, Severity, Violation
+from app.domain.model import (NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Duty, DutyRole, NurseStatus, Roster, Severity,
+                              Violation)
 
 HARD, SOFT = Severity.HARD, Severity.SOFT
 # 이전 달을 거슬러 볼 일수. 연속 규칙 최대값(31)을 덮는다
@@ -34,6 +35,8 @@ def validate(r: Roster) -> list[Violation]:
                 out.append(Violation(HARD, "OUT_OF_AFFILIATION", n.id, d, x, f"{n.name} 소속 기간 밖 배정"))
             if n.duty_role == DutyRole.CHARGE and x in (Duty.E, Duty.N):
                 out.append(Violation(HARD, "CHARGE_DAY_ONLY", n.id, d, x, "차지는 D만 배정 가능"))
+            if n.duty_role == DutyRole.NIGHT_ONLY and x in (Duty.D, Duty.E):
+                out.append(Violation(HARD, "NIGHT_ONLY_SHIFT", n.id, d, x, "나이트 전담은 N만 배정 가능"))
             if n.status == NurseStatus.PREGNANT and x == Duty.N:
                 out.append(Violation(HARD, "PREGNANT_NIGHT", n.id, d, x, "임신 상태 N 배정 불가"))
 
@@ -65,9 +68,9 @@ def validate(r: Roster) -> list[Violation]:
         if n.affiliated(days[0]) and n.affiliated(days[-1]) and offs < r.off_target:
             out.append(Violation(SOFT, "OFF_TARGET", n.id, None, None, f"OFF {offs} / 목표 {r.off_target}"))
         month_nights = sum(1 for d in days if r.cell(n.id, d) == Duty.N)
-        if month_nights > rules.max_monthly_nights:
-            out.append(Violation(SOFT, "MAX_MONTHLY_NIGHTS", n.id, None, None,
-                                 f"월 야간 {month_nights}회 (최대 {rules.max_monthly_nights})"))
+        limit = NIGHT_ONLY_MAX_NIGHTS if n.duty_role == DutyRole.NIGHT_ONLY else rules.max_monthly_nights
+        if month_nights > limit:
+            out.append(Violation(SOFT, "MAX_MONTHLY_NIGHTS", n.id, None, None, f"월 야간 {month_nights}회 (최대 {limit})"))
         out.extend(_weekly_rest(r, n, days))
 
     for d in days:
@@ -76,14 +79,27 @@ def validate(r: Roster) -> list[Violation]:
             need, have = rules.required(duty), count.get(duty, 0)
             if have < need:
                 out.append(Violation(HARD, "COVERAGE", None, d, duty, f"{duty} 필요 {need}명 / 배정 {have}명"))
+        for code, roles, label in (("CHARGE_EVERY_SHIFT", {DutyRole.CHARGE}, "차지"),
+                                   ("SENIOR_EVERY_SHIFT", SENIOR_ROLES, "고연차(차지·프리셉터)")):
+            if not has_role(r, roles):
+                continue
+            for duty in (Duty.D, Duty.E, Duty.N):
+                if rules.required(duty) > 0 and not any(
+                        n.duty_role in roles and n.affiliated(d) and r.cell(n.id, d) == duty for n in r.nurses):
+                    out.append(Violation(HARD, code, None, d, duty, f"{duty} 근무에 {label} 없음"))
         veteran_on_night = any(n.duty_role != DutyRole.NEW and r.cell(n.id, d) == Duty.N and n.affiliated(d)
                                for n in r.nurses)
         if not veteran_on_night:
             for n in r.nurses:
                 if n.duty_role == DutyRole.NEW and r.cell(n.id, d) == Duty.N:
                     out.append(Violation(HARD, "NEW_NIGHT_ALONE", n.id, d, Duty.N, "신입 N 단독 배치"))
-    # RULE-01: 병동 설정으로 꺼진 규칙은 빼고, 심각도를 바꾼 규칙은 덮어쓴다
-    return [replace(v, severity=sev) for v in out if (sev := rules.severity.get(v.rule_id, v.severity)) is not None]
+    # RULE-01: 병동 설정으로 꺼진 규칙(기본 꺼짐 포함)은 빼고, 심각도를 바꾼 규칙은 덮어쓴다
+    return [replace(v, severity=sev) for v in out if (sev := rules.mode(v.rule_id)) is not None]
+
+
+def has_role(r: Roster, roles) -> bool:
+    """근무마다 차지·고연차 규칙은 병동에 그 역할이 한 명이라도 있을 때만 적용한다"""
+    return any(n.duty_role in roles and n.status != NurseStatus.ON_LEAVE for n in r.nurses)
 
 
 REVERSE = {(Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E)}  # 역순환: 근무 사이 휴식이 11시간 미만
@@ -101,6 +117,10 @@ def _patterns(r: Roster, n, d: date, x: Duty | None) -> list[Violation]:
     if work and ((x != Duty.N and p1 == Duty.N and p2 == Duty.N)
                  or (p1 != Duty.N and p2 == Duty.N and p3 == Duty.N)):
         out.append(Violation(HARD, "NIGHT_REST", n.id, d, x, "야간 2일 연속 후 OFF 2일 필요"))
+    # 하루짜리 시프트 (앞뒤가 다른 근무, 퐁당퐁당). 앞뒤가 모두 휴무면 고립 배치로 따로 본다
+    if (work and p1 is not None and nxt is not None and p1 != x and nxt != x
+            and (p1.is_work or nxt.is_work)):
+        out.append(Violation(SOFT, "SHIFT_BLOCK", n.id, d, x, f"{x} 근무가 하루만 (같은 근무 2일 이상 권장)"))
     if x == Duty.D and p1 in OFFISH and p2 == Duty.N:
         out.append(Violation(SOFT, "NIGHT_OFF_DAY", n.id, d, x, "나이트-오프-데이 (휴식 부족)"))
     # 고립 배치: 앞뒤가 모두 정해진 날만 본다 (미배정이 끼면 판단하지 않음)

@@ -49,6 +49,8 @@ def _can(r: Roster, n: NurseInfo, duty: Duty, d: date) -> bool:
         return False
     if rules.enforced("PREGNANT_NIGHT") and n.status == NurseStatus.PREGNANT and duty == Duty.N:
         return False
+    if n.duty_role == DutyRole.NIGHT_ONLY and duty != Duty.N:
+        return False
     # 뒷날도 본다: 고정 셀(GEN-05)·연차가 이미 채워져 있을 수 있다
     if rules.enforced("NIGHT_TO_DAY") and rules.forbid_night_to_day and (
             (duty == Duty.D and r.cell(n.id, d - timedelta(days=1)) == Duty.N)
