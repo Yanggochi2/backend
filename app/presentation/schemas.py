@@ -4,10 +4,11 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt, StringConstraints, field_validator
+from pydantic import (AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt,
+                      StringConstraints, field_validator, model_validator)
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import Duty, NurseRank, NurseStatus, Preset, RequestType, Severity
+from app.domain.model import Duty, DutyRole, NurseRank, NurseStatus, Preset, RequestType, Severity
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -77,11 +78,28 @@ class NurseCreate(Body):
     rank: NurseRank
     hire_year: int = Field(ge=1950, le=2100)
     is_preceptor: bool = False
+    career_months: int | None = Field(None, ge=0, le=1200)
     status: NurseStatus
     skill_level: int = Field(ge=1, le=5)
     affiliation_start: date
     affiliation_end: date | None = None
     preceptor_of: list[uuid.UUID] | None = None
+    # 기존 프론트 계약의 역할 값. 새 직급/프리셉터 필드와 함께 전환 기간 동안 받는다.
+    duty_role: DutyRole | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_frontend_contract(cls, value):
+        data = dict(value)
+        duty_role = data.get("dutyRole", data.get("duty_role"))
+        if "rank" not in data:
+            data["rank"] = "CHARGE_NURSE" if duty_role == "CHARGE" else "STAFF_NURSE"
+        if "hireYear" not in data and "hire_year" not in data and data.get("joinedAt"):
+            data["hireYear"] = int(str(data["joinedAt"])[:4])
+        if "isPreceptor" not in data and "is_preceptor" not in data:
+            data["isPreceptor"] = duty_role == "PRECEPTOR"
+        data.pop("joinedAt", None)
+        return data
 
 
 class NursePatch(Body):
@@ -91,12 +109,27 @@ class NursePatch(Body):
     rank: NurseRank | None = None
     hire_year: int | None = Field(None, ge=1950, le=2100)
     is_preceptor: bool | None = None
+    career_months: int | None = Field(None, ge=0, le=1200)
     status: NurseStatus | None = None
     skill_level: int | None = Field(None, ge=1, le=5)
     affiliation_start: date | None = None
     affiliation_end: date | None = None
     preceptor_of: list[uuid.UUID] | None = None
+    duty_role: DutyRole | None = None
     version: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_frontend_contract(cls, value):
+        data = dict(value)
+        duty_role = data.get("dutyRole", data.get("duty_role"))
+        if duty_role is not None:
+            data.setdefault("rank", "CHARGE_NURSE" if duty_role == "CHARGE" else "STAFF_NURSE")
+            data.setdefault("isPreceptor", duty_role == "PRECEPTOR")
+        if "hireYear" not in data and "hire_year" not in data and data.get("joinedAt"):
+            data["hireYear"] = int(str(data["joinedAt"])[:4])
+        data.pop("joinedAt", None)
+        return data
 
 
 class Retire(Body):

@@ -9,6 +9,7 @@ def test_schedule_defaults_to_full_roster(client):
     schedule = data(client, "POST", "/wards/me/schedules", {"yearMonth": YM}, 201)
     assert len(schedule["nurses"]) == 28
     assert all({"rank", "hireYear", "isPreceptor"} <= set(n) for n in schedule["nurses"])
+    assert all({"role", "dutyRole", "careerMonths"} <= set(n) for n in schedule["nurses"])
 
 def test_confirmed_schedule_share_link_is_public_and_read_only(client):
     schedule = data(client, "POST", "/wards/me/schedules", {"yearMonth": YM}, 201)

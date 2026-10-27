@@ -10,7 +10,7 @@ from fastapi import APIRouter, Header, Query, Response, UploadFile
 
 from app.business import audit, excel, generations, nurses, rules, schedules, wards
 from app.business.common import ApiException, parse_month
-from app.domain.model import NurseRank, NurseStatus, Severity
+from app.domain.model import DutyRole, NurseRank, NurseStatus, Role, Severity
 from app.presentation import schemas as s
 from app.presentation.deps import DB, PREFIX, Page, TxRoute, UserId
 
@@ -47,9 +47,10 @@ def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
 
 @api.get("/wards/me/nurses")
 def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, rank: NurseRank | None = None,
+                role: Role | None = None, dutyRole: DutyRole | None = None,
                 status: NurseStatus | None = None,
                 includeRetired: bool = False, sort: str | None = None):  # noqa: N803
-    return nurses.list_(db, user_id, q, rank, status, includeRetired, sort, p.page, p.size)
+    return nurses.list_(db, user_id, q, rank, role, dutyRole, status, includeRetired, sort, p.page, p.size)
 
 
 @api.get("/wards/me/nurses/{nurse_id}")

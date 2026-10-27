@@ -15,18 +15,22 @@ SORTS = {"name", "hireYear", "skillLevel", "rank"}
 _SORT_KEY = {"name": lambda n: n.name, "hireYear": lambda n: n.hire_year,
              "skillLevel": lambda n: n.skill_level, "rank": lambda n: n.rank.value}
 FIELDS = {"name": "name", "rank": "rank", "hireYear": "hire_year", "isPreceptor": "is_preceptor",
-          "status": "status", "skillLevel": "skill_level", "affiliationStart": "affiliation_start",
+          "careerMonths": "career_months", "status": "status", "skillLevel": "skill_level",
+          "affiliationStart": "affiliation_start",
           "affiliationEnd": "affiliation_end", "preceptorOf": "preceptor_of"}
 
 
-def list_(db: Session, user_id: uuid.UUID, q: str | None, rank: NurseRank | None,
-          status: NurseStatus | None, include_retired: bool, sort: str | None, page_no: int, size: int) -> dict:
+def list_(db: Session, user_id: uuid.UUID, q: str | None, rank: NurseRank | None, role: Role | None,
+          duty_role: DutyRole | None, status: NurseStatus | None, include_retired: bool,
+          sort: str | None, page_no: int, size: int) -> dict:
     m = members.require_head(db, user_id)
     field, desc = parse_sort(sort, SORTS, "name,asc")
     rows = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == m.ward_id))
             if (include_retired or status == NurseStatus.RETIRED or n.status != NurseStatus.RETIRED)
             and (not q or q.strip() in n.name)
             and (rank is None or n.rank == rank)
+            and (role is None or n.role == role)
+            and (duty_role is None or n.duty_role == duty_role)
             and (status is None or n.status == status)]
     rows.sort(key=lambda n: (_SORT_KEY[field](n), n.name), reverse=desc)
     return page([view(n) for n in rows[page_no * size:(page_no + 1) * size]], page_no, size, len(rows))
@@ -63,6 +67,7 @@ def patch(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, changes: dict, v
     before = view(n)
     current = {attr: getattr(n, attr) for attr in FIELDS.values()}
     current["preceptor_of"] = [uuid.UUID(x) for x in n.preceptor_of or []]
+    current["duty_role"] = n.duty_role
     _apply(db, m, n, {**current, **changes})
     db.flush()
     audit.log(db, m.ward_id, user_id, "NURSE_UPDATED", "NURSE", n.id, before, view(n))
@@ -88,6 +93,8 @@ def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> d
 def view(n: Nurse) -> dict:
     return {"id": n.id, "name": n.name, "rank": n.rank, "hireYear": n.hire_year,
             "isPreceptor": n.is_preceptor, "status": n.status, "skillLevel": n.skill_level,
+            "role": n.role, "dutyRole": n.duty_role, "joinedAt": iso(n.joined_at),
+            "careerMonths": n.career_months,
             "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
             "preceptorOf": sorted(n.preceptor_of or []), "version": n.version}
 
@@ -124,9 +131,12 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
     n.preceptor_of = sorted({str(p) for p in f["preceptor_of"] or []})
     n.role = Role.HEAD_NURSE if n.rank == NurseRank.HEAD_NURSE else Role.NURSE
     n.joined_at = date(n.hire_year, 1, 1)
-    n.career_months = max(0, (year - n.hire_year) * 12)
+    if n.career_months is None:
+        n.career_months = max(0, (year - n.hire_year) * 12)
+    legacy_duty_role = f.get("duty_role")
     n.duty_role = (DutyRole.CHARGE if n.rank == NurseRank.CHARGE_NURSE else
                    DutyRole.PRECEPTOR if n.is_preceptor else
+                   legacy_duty_role if legacy_duty_role in (DutyRole.GENERAL, DutyRole.NEW, DutyRole.NIGHT_ONLY) else
                    DutyRole.NEW if n.skill_level == 1 else DutyRole.GENERAL)
 
 

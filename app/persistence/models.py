@@ -126,11 +126,10 @@ class Nurse(Base):
         # 기존 생성기는 배정 분류를 사용한다. 외부 모델에서는 직급·프리셉터·숙련도를 분리하고
         # 여기에서만 호환 분류로 변환한다.
         duty_role = (DutyRole.CHARGE if self.rank == NurseRank.CHARGE_NURSE else
-                     DutyRole.PRECEPTOR if self.is_preceptor else
-                     DutyRole.NEW if self.skill_level == 1 else DutyRole.GENERAL)
+                     DutyRole.PRECEPTOR if self.is_preceptor else self.duty_role)
         return NurseInfo(self.id, self.name, duty_role, self.status, self.affiliation_start,
                          self.affiliation_end, frozenset(uuid.UUID(x) for x in self.preceptor_of or []),
-                         self.rank, self.hire_year, self.is_preceptor)
+                         self.rank, self.hire_year, self.is_preceptor, self.role, self.career_months)
 
 
 class Holiday(Base):

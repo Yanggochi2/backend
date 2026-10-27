@@ -188,6 +188,8 @@ class NurseInfo:
     rank: NurseRank = NurseRank.STAFF_NURSE
     hire_year: int | None = None
     is_preceptor: bool = False
+    role: Role = Role.NURSE
+    career_months: int = 0
 
     def affiliated(self, d: date) -> bool:
         return self.affiliation_start <= d and (self.affiliation_end is None or d <= self.affiliation_end)

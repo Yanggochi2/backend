@@ -418,6 +418,7 @@ def view(db: Session, s: Schedule, m: Member) -> dict:
     return {"id": s.id, "yearMonth": s.year_month, "status": s.status, "version": s.version,
             "nurses": [{"id": n.id, "name": n.name, "rank": n.rank, "hireYear": n.hire_year,
                         "isPreceptor": n.is_preceptor,
+                        "role": n.role, "dutyRole": n.duty_role, "careerMonths": n.career_months,
                         "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
                         "nightBlocked": status[n.id] == NurseStatus.PREGNANT if m.is_head else None}
                        for n in r.nurses],

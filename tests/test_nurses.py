@@ -21,3 +21,26 @@ def test_create_update_and_preceptor_validation(client):
         "hireYear": today_kst().year - 5, "isPreceptor": True,
     })
     err(invalid, 422, "INVALID_PRECEPTOR")
+
+def test_legacy_frontend_create_update_and_filters_remain_compatible(client):
+    created = data(client, "POST", "/wards/me/nurses", {
+        "name": "프론트 계약 간호사", "dutyRole": "NIGHT_ONLY", "status": "ACTIVE",
+        "joinedAt": f"{today_kst().year - 7}-01-01", "careerMonths": 101,
+        "skillLevel": 3, "affiliationStart": "2024-01-01",
+    }, 201)
+    assert created["rank"] == "STAFF_NURSE"
+    assert created["role"] == "NURSE"
+    assert created["dutyRole"] == "NIGHT_ONLY"
+    assert created["joinedAt"] == f"{today_kst().year - 7}-01-01"
+    assert created["careerMonths"] == 101
+
+    updated = data(client, "PATCH", f"/wards/me/nurses/{created['id']}", {
+        "dutyRole": "CHARGE", "version": created["version"],
+    })
+    assert updated["nurse"]["rank"] == "CHARGE_NURSE"
+    assert updated["nurse"]["dutyRole"] == "CHARGE"
+
+    heads = data(client, "GET", "/wards/me/nurses?role=HEAD_NURSE&size=100")
+    assert len(heads) == 1 and heads[0]["role"] == "HEAD_NURSE"
+    charges = data(client, "GET", "/wards/me/nurses?dutyRole=CHARGE&size=100")
+    assert all(n["dutyRole"] == "CHARGE" for n in charges)
