@@ -20,6 +20,7 @@ from app.business import notifications
 from app.business.common import KST, ApiException, iso
 from app.persistence import models  # noqa: F401 (테이블 등록)
 from app.persistence.db import Base, SessionLocal, engine, now
+from app.persistence.migrations import migrate_legacy_schema
 from app.presentation.routes import api
 
 log = logging.getLogger("nurs")
@@ -52,6 +53,7 @@ async def _reminder_loop() -> None:
 async def lifespan(_: FastAPI):
     # ponytail: 시작 시 테이블 자동 생성. 운영 배포 전 Alembic 마이그레이션으로 전환 (Yanggochi2/backend#24)
     Base.metadata.create_all(engine)
+    migrate_legacy_schema(engine)
     task = asyncio.create_task(_reminder_loop())
     yield
     task.cancel()

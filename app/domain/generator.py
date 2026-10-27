@@ -23,7 +23,7 @@ SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
 # OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
 WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
            "WISH_DUTY_IGNORED": 20, "WEEKLY_REST": 15, "ISOLATED_SHIFT": 10, "SHIFT_BLOCK": 5,
-           "PRECEPTOR_MISMATCH": 5}
+           "PRECEPTOR_MISMATCH": 5, "NIGHT_REST_2D": 25}
 FAIRNESS_WEIGHT = 10
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
@@ -130,9 +130,11 @@ class _Model:
         if not self.rules.enabled(code):
             return SKIP
         mode = self.rules.severity_for(code)
+        if mode == Severity.HARD:
+            return hard_weight
         if code in WEIGHTS:
             return WEIGHTS[code]
-        return hard_weight if mode == Severity.HARD else SOFTENED_WEIGHT
+        return SOFTENED_WEIGHT
 
     def forbid(self, lits, weight):
         """lits가 모두 참인 상황을 막는다(weight None) 또는 감점한다. 고정 칸만으로 정해진 경우는 건너뛴다"""
@@ -185,13 +187,15 @@ class _Model:
         k = rules.parameter("MAX_CONSECUTIVE_WORK", "max")
         for i in range(len(t) - k):
             self.forbid([self.lit(n, d, WORK) for d in t[i:i + k + 1]], w)
-        w = self.weight("NIGHT_REST")
-        for i in range(1, len(t) - 1):
-            nn = [self.lit(n, t[i - 1], Duty.N), self.lit(n, t[i], Duty.N)]
-            for x in (Duty.D, Duty.E):
-                self.forbid(nn + [self.lit(n, t[i + 1], x)], w)
-            if i + 2 < len(t):
-                self.forbid(nn + [_neg(self.lit(n, t[i + 1], Duty.N)), self.lit(n, t[i + 2], WORK)], w)
+        # 나이트 블록이 끝나면 다음 날 OFF는 필수, 이틀 OFF는 권장한다.
+        for i in range(1, len(t)):
+            # N은 최대 연속 일수 안에서 이어질 수 있다. 블록을 끝내고 D/E로 바로 전환하는 경우만 막는다.
+            for duty in (Duty.D, Duty.E):
+                self.forbid([self.lit(n, t[i - 1], Duty.N), self.lit(n, t[i], duty)],
+                            self.weight("NIGHT_REST"))
+        for i in range(2, len(t)):
+            self.forbid([self.lit(n, t[i - 2], Duty.N), _neg(self.lit(n, t[i - 1], Duty.N)),
+                         self.lit(n, t[i], WORK)], self.weight("NIGHT_REST_2D"))
         for d in self.days:
             if n.status == NurseStatus.PREGNANT:
                 self.forbid([self.lit(n, d, Duty.N)], self.weight("PREGNANT_NIGHT"))
