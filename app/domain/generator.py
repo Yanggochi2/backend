@@ -13,8 +13,9 @@ from datetime import date, timedelta
 from ortools.sat.python import cp_model
 
 from app.domain import greedy
+from app.domain.rule_engine import fill_day_fixed
 from app.domain.model import NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Cells, Duty, DutyRole, NurseStatus, Roster, Severity
-from app.domain.validator import has_role, off_target
+from app.domain.validator import SKILL_TOLERANCE, has_role, off_target
 
 SHIFTS = (Duty.D, Duty.E, Duty.N, Duty.O)
 COVERAGE_WEIGHT = 10_000
@@ -23,8 +24,9 @@ SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
 # OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
 WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
            "WISH_DUTY_IGNORED": 20, "WEEKLY_REST": 15, "ISOLATED_SHIFT": 10, "SHIFT_BLOCK": 5,
-           "PRECEPTOR_MISMATCH": 5}
+           "PRECEPTOR_MISMATCH": 5, "SKILL_MIX": 5}
 FAIRNESS_WEIGHT = 10
+SKILL_OUT_WEIGHT = 100  # 근무 평균 숙련도가 허용 범위를 벗어난 정도
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
@@ -44,6 +46,7 @@ def generate(r: Roster, max_seconds: float | None = None) -> Cells:
     2단계는 그 해를 시작점으로 소프트 규칙까지 최적화한다. 한 번에 풀면 소프트 감점에 묻혀 하드 위반이 늦게 사라진다
     """
     total = max_seconds or DEFAULT_SECONDS
+    r = fill_day_fixed(r)
     model = _Model(r)
     model.build()
     # 솔버가 해를 못 찾으면 그리디 결과를 쓴다. 시작점은 실무형 순환 패턴 (패턴이 깔끔해 다듬을 것이 적다)
@@ -186,12 +189,29 @@ class _Model:
         for i in range(len(t) - k):
             self.forbid([self.lit(n, d, WORK) for d in t[i:i + k + 1]], w)
         w = self.weight("NIGHT_REST")
-        for i in range(1, len(t) - 1):
-            nn = [self.lit(n, t[i - 1], Duty.N), self.lit(n, t[i], Duty.N)]
+        k = rules.parameter("NIGHT_REST", "nights")
+        for i in range(k - 1, len(t) - 1):
+            nn = [self.lit(n, d, Duty.N) for d in t[i - k + 1:i + 1]]
             for x in (Duty.D, Duty.E):
                 self.forbid(nn + [self.lit(n, t[i + 1], x)], w)
             if i + 2 < len(t):
                 self.forbid(nn + [_neg(self.lit(n, t[i + 1], Duty.N)), self.lit(n, t[i + 2], WORK)], w)
+        w = self.weight("PING_PONG")
+        if w is not SKIP:
+            for i in range(2, len(t)):
+                if not all(self.known(n, d) for d in t[i - 2:i + 1]):
+                    continue
+                # 매일 다른 근무 (D E N 등)
+                for a in (Duty.D, Duty.E, Duty.N):
+                    for b in (Duty.D, Duty.E, Duty.N):
+                        for c in (Duty.D, Duty.E, Duty.N):
+                            if a != b != c:
+                                self.forbid([self.lit(n, t[i - 2], a), self.lit(n, t[i - 1], b),
+                                             self.lit(n, t[i], c)], w)
+                # 근무·휴무 교대 4일 (W R W R, R W R W)
+                if i >= 3 and self.known(n, t[i - 3]):
+                    for kinds in ((WORK, REST, WORK, REST), (REST, WORK, REST, WORK)):
+                        self.forbid([self.lit(n, d, x) for d, x in zip(t[i - 3:i + 1], kinds)], w)
         for d in self.days:
             if n.status == NurseStatus.PREGNANT:
                 self.forbid([self.lit(n, d, Duty.N)], self.weight("PREGNANT_NIGHT"))
@@ -220,7 +240,7 @@ class _Model:
             limit = (NIGHT_ONLY_MAX_NIGHTS if n.duty_role == DutyRole.NIGHT_ONLY
                      else self.rules.parameter("MAX_MONTHLY_NIGHTS", "max"))
             self.at_most(self.count(n, days, Duty.N), limit, w, len(days))
-        if n.affiliated(days[0]) and n.affiliated(days[-1]) and r.off_target > 0:
+        if n.affiliated(days[0]) and n.affiliated(days[-1]) and r.off_target > 0 and not r.day_fixed(n):
             # OFF는 목표 ± 허용 편차 안으로 (벗어나면 하드 수준 감점), 안에서도 목표에 가깝게
             rest = self.count(n, days, REST)
             w = self.weight("OFF_TARGET")
@@ -282,8 +302,10 @@ class _Model:
         w = self.weight("COVERAGE", COVERAGE_WEIGHT)
         w_new = self.weight("NEW_NIGHT_ALONE", NEW_ALONE_WEIGHT)
         needs = {"CHARGE_EVERY_SHIFT": has_role(r, {DutyRole.CHARGE}), "SENIOR_EVERY_SHIFT": has_role(r, SENIOR_ROLES)}
+        w_skill = self.weight("SKILL_MIX")
         for d in self.days:
-            on = [n for n in r.nurses if n.affiliated(d)]
+            present = [n for n in r.nurses if n.affiliated(d)]
+            on = [n for n in present if not r.day_fixed(n)]  # 평일 D 고정은 인원에 세지 않는다
             for x in (Duty.D, Duty.E, Duty.N):
                 # 필요 인원과 정확히 같게 (부족·초과 모두 하드 위반, 인원 부족 달 대비 큰 감점)
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)
@@ -291,12 +313,24 @@ class _Model:
                 self.at_least(assigned, need, w)
                 if w is not SKIP:
                     self.at_most(assigned, need, w, len(on))
+                if w_skill is not SKIP and need > 0:
+                    # 평균 숙련도를 목표에 가깝게: |Σ(숙련도 - 목표)| 감점
+                    goal = r.rules.parameter("SKILL_MIX", "target")
+                    gap = sum(self.lit(n, d, x) * (n.skill_level - goal) for n in on)
+                    dev = self.m.NewIntVar(0, 5 * len(on), "")
+                    self.m.Add(dev >= gap)
+                    self.m.Add(dev >= -gap)
+                    self.cost.append((w_skill, dev))
+                    # 평균이 허용 범위(±SKILL_TOLERANCE)를 벗어나면 크게 감점. 인원은 need로 맞춰지므로 need 기준
+                    out = self.m.NewIntVar(0, 50 * len(on), "")
+                    self.m.Add(out >= 10 * dev - int(10 * SKILL_TOLERANCE) * need)
+                    self.cost.append((SKILL_OUT_WEIGHT, out))
             for code, roles in (("CHARGE_EVERY_SHIFT", {DutyRole.CHARGE}), ("SENIOR_EVERY_SHIFT", SENIOR_ROLES)):
                 if not needs[code]:
                     continue
                 for x in (Duty.D, Duty.E, Duty.N):
                     if r.rules.required(x) > 0:
-                        self.at_least(sum(self.lit(n, d, x) * 1 for n in on if n.duty_role in roles), 1,
+                        self.at_least(sum(self.lit(n, d, x) * 1 for n in present if n.duty_role in roles), 1,
                                       self.weight(code, COVERAGE_WEIGHT))
             if w_new is SKIP:
                 continue
@@ -313,7 +347,7 @@ class _Model:
         """그 달 내내 소속이고 근무 가능한 간호사끼리 야간·주말 근무·총 근무 횟수 차이를 줄인다"""
         days = self.days
         full = [n for n in self.r.nurses if n.affiliated(days[0]) and n.affiliated(days[-1])
-                and n.status != NurseStatus.ON_LEAVE]
+                and n.status != NurseStatus.ON_LEAVE and not self.r.day_fixed(n)]
         shift = [n for n in full if n.duty_role != DutyRole.NIGHT_ONLY]
         weekend = [d for d in days if d.weekday() >= 5]
         night_ok = [n for n in shift if n.status != NurseStatus.PREGNANT and n.duty_role != DutyRole.CHARGE]

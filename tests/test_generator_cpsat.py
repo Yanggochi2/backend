@@ -50,9 +50,9 @@ def test_small_ward_keeps_every_hard_rule():
     for n in ns:
         xs = seq(out, n.id)
         assert all((a, b) not in REVERSE for a, b in zip(xs, xs[1:])), f"{n.id} 역순환"
-        for i in range(1, len(xs) - 2):
-            if xs[i - 1] == xs[i] == Duty.N and xs[i + 1] != Duty.N:
-                assert not xs[i + 1].is_work and not xs[i + 2].is_work, f"{n.id} 야간 후 휴식"
+        for i in range(2, len(xs) - 2):
+            if xs[i - 2] == xs[i - 1] == xs[i] == Duty.N and xs[i + 1] != Duty.N:
+                assert not xs[i + 1].is_work and not xs[i + 2].is_work, f"{n.id} 야간 3일 후 휴식"
     assert all(x == Duty.D for x in seq(out, 1) if x.is_work), "차지는 D만"
     assert Duty.N not in seq(out, 2), "임신 중 야간 없음"
 
@@ -79,7 +79,8 @@ def test_thirty_nurse_ward_quality():
     ns[15] = nurse(15, status=NurseStatus.PREGNANT)
     wish = {i: {DAYS[i % 30]} for i in range(0, 30, 3)}
     # 하루 18명을 정확히 채우면 30명이 1인 18일 근무 → OFF 목표 12 (서비스에서는 자동 계산)
-    r = Roster(NOV, ns, {}, rules(7, 6, 5), 12, wish_offs=wish)
+    # 차지가 교대 근무를 도는 병동 (평일 D 고정 끔)
+    r = Roster(NOV, ns, {}, rules(7, 6, 5, DAY_FIXED=None), 12, wish_offs=wish)
     out, vs = run(r, seconds=30)
     by = {}
     for v in vs:
@@ -96,7 +97,9 @@ def test_charge_every_shift_and_night_only_nurses():
     roles = [DutyRole.CHARGE] * 6 + [DutyRole.NIGHT_ONLY] * 2 + [DutyRole.PRECEPTOR] * 3 + [DutyRole.NEW] * 3
     roles += [DutyRole.GENERAL] * 16
     ns = [nurse(i, role) for i, role in enumerate(roles)]
-    out, vs = run(Roster(NOV, ns, {}, rules(7, 6, 5), 12), seconds=30)
+    # 근무마다 차지는 평일 D 고정과 함께 쓸 수 없다 → 고정을 끄고 켠다
+    r = rules(7, 6, 5, DAY_FIXED=None, CHARGE_EVERY_SHIFT={"enabled": True})
+    out, vs = run(Roster(NOV, ns, {}, r, 12), seconds=30)
     assert hard(vs) == []
     for d in DAYS:
         for x in (Duty.D, Duty.E, Duty.N):

@@ -66,11 +66,19 @@ def err(r, status, code) -> dict:
     return e
 
 
-def ward_head(d=1, e=1, n=1, preset="STANDARD") -> Api:
-    """병동을 개설한 수간호사"""
+def ward_head(d=1, e=1, n=1, preset="STANDARD", day_fixed=False) -> Api:
+    """
+    병동을 개설한 수간호사. 작은 병동에서 수간호사도 교대 근무에 넣어 흐름을 검사하므로
+    평일 D 고정(DAY_FIXED)과 근무별 평균 숙련도(SKILL_MIX, 수간호사 숙련도 기본 1)는 기본으로 끈다
+    (규칙 자체는 test_ward_guidelines에서 검사)
+    """
     h = user("수간호사")
     h.data("POST", "/wards", {"hospitalName": "한빛", "wardName": "7병동", "requiredStaff": {"D": d, "E": e, "N": n},
                               "rulePreset": preset}, status=201)
+    if not day_fixed:
+        for r in h.data("GET", "/wards/me/rules"):
+            if r["code"] in ("DAY_FIXED", "SKILL_MIX"):
+                h.data("PATCH", f"/wards/me/rules/{r['id']}", {"enabled": False})
     return h
 
 

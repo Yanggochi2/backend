@@ -17,15 +17,18 @@ CATALOG = {
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
     "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", "HARD"),
-    "NIGHT_REST": RuleDef("야간 2일 연속 후 OFF 2일", "HARD"),
+    "NIGHT_REST": RuleDef("야간 연속 후 OFF 2일", "HARD", params={"nights": 3}),
     # 근무마다 차지 배치와 함께 쓰도록 기본은 D·E·N 모두 허용
     "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D", "E", "N"]}),
-    "CHARGE_EVERY_SHIFT": RuleDef("근무마다 차지 1명 이상", "HARD"),
+    # 차지는 평일 D 고정(DAY_FIXED)이라 E·N에 둘 수 없다 → 기본 꺼짐
+    "CHARGE_EVERY_SHIFT": RuleDef("근무마다 차지 1명 이상", "HARD", enabled=False),
     "SENIOR_EVERY_SHIFT": RuleDef("근무마다 고연차(차지·프리셉터) 1명 이상", "HARD"),
     "NIGHT_ONLY_SHIFT": RuleDef("나이트 전담은 N만", "HARD", locked=True),
     "PREGNANT_NIGHT": RuleDef("임신 중 N 금지", "HARD", locked=True),
     "NEW_NIGHT_ALONE": RuleDef("신입 N 지원 인원", "HARD", params={"minExperienced": 1}),
     "OUT_OF_AFFILIATION": RuleDef("소속 기간 밖 배정 금지", "HARD", locked=True),
+    "DAY_FIXED": RuleDef("수간호사·차지 평일 D 고정 (주말·공휴일 OFF, 인원 별도)", "HARD"),
+    "PING_PONG": RuleDef("퐁당퐁당 금지 (근무·휴무 교대, 매일 다른 근무)", "HARD"),
     "OFF_TARGET": RuleDef("월 OFF 목표", "SOFT", params={"maxDeviation": 1}),
     "WISH_OFF_IGNORED": RuleDef("희망 오프 반영", "SOFT"),
     "WISH_DUTY_IGNORED": RuleDef("희망 근무 반영", "SOFT"),
@@ -36,6 +39,7 @@ CATALOG = {
     "ISOLATED_SHIFT": RuleDef("고립된 근무·휴무 피하기", "SOFT"),
     "WEEKLY_REST": RuleDef("주마다 연속 휴무 2일", "SOFT"),
     "SHIFT_BLOCK": RuleDef("같은 근무 2일 이상 이어서", "SOFT"),
+    "SKILL_MIX": RuleDef("근무별 평균 숙련도", "SOFT", params={"target": 3}),
 }
 MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY", "NIGHT_REST"}
 
@@ -49,9 +53,11 @@ def parameters(code: str, supplied: dict) -> dict:
     if code == "COVERAGE":
         if set(supplied) != {"D", "E", "N"} or any(type(v) is not int or v < 0 for v in values.values()) or not sum(values.values()):
             raise ValueError("D/E/N은 각각 0 이상 정수, 합계 1 이상이어야 합니다")
-    for key in ("max", "minExperienced"):
+    for key in ("max", "minExperienced", "nights"):
         if key in values and (type(values[key]) is not int or not 1 <= values[key] <= 31):
             raise ValueError(f"{key}는 1~31 정수여야 합니다")
+    if "target" in values and (type(values["target"]) is not int or not 1 <= values["target"] <= 5):
+        raise ValueError("target은 1~5 정수여야 합니다")
     if "maxDeviation" in values and (type(values["maxDeviation"]) is not int or not 0 <= values["maxDeviation"] <= 31):
         raise ValueError("maxDeviation은 0~31 정수여야 합니다")
     if "allowedDuties" in values:

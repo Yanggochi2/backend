@@ -51,7 +51,7 @@ class Withdraw(Body):
 class CreateWard(Body):
     hospital_name: NonBlank
     ward_name: NonBlank
-    required_staff: dict[str, int]
+    required_staff: dict[str, int] = {"D": 7, "E": 5, "N": 5}  # 수간호사가 규칙(COVERAGE)에서 수정
     rule_preset: Preset
 
 

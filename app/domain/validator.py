@@ -37,7 +37,8 @@ def validate(r: Roster) -> list[Violation]:
 
         tolerance = rules.parameter("OFF_TARGET", "maxDeviation")
         target = off_target(r, n)
-        if n.affiliated(days[0]) and n.affiliated(days[-1]) and abs(offs - target) > tolerance:
+        if (n.affiliated(days[0]) and n.affiliated(days[-1]) and not r.day_fixed(n)
+                and abs(offs - target) > tolerance):
             direction = "과다" if offs > target else "부족"
             out.append(Violation(
                 SOFT, "OFF_TARGET", n.id, None, None,
@@ -59,6 +60,10 @@ def validate(r: Roster) -> list[Violation]:
                     HARD, "COVERAGE", None, d, duty,
                     f"{duty} 인원 {direction}: 필요 {need}명 / 배정 {have}명",
                 ))
+        for duty, avg in skill_mix(r, d).items():
+            goal = rules.parameter("SKILL_MIX", "target")
+            if abs(avg - goal) > SKILL_TOLERANCE:
+                out.append(Violation(SOFT, "SKILL_MIX", None, d, duty, f"{duty} 평균 숙련도 {avg:.1f} (목표 {goal})"))
         for code, roles, label in (("CHARGE_EVERY_SHIFT", {DutyRole.CHARGE}, "차지"),
                                    ("SENIOR_EVERY_SHIFT", SENIOR_ROLES, "고연차(차지·프리셉터)")):
             if not has_role(r, roles):
@@ -74,10 +79,29 @@ OFFISH = (Duty.O, Duty.AL)
 
 
 def off_target(r: Roster, n) -> int:
-    """간호사의 월 OFF 목표. 나이트 전담은 나이트(=근무일)가 월 15회를 넘지 않도록 그 달 일수 - 15 이상"""
-    if n.duty_role == DutyRole.NIGHT_ONLY and r.off_target > 0:
-        return max(r.off_target, len(r.days()) - NIGHT_ONLY_MAX_NIGHTS)
-    return r.off_target
+    """
+    간호사의 월 OFF 목표 = 병동 목표(주말 + 공휴일 + 1 이상) + 지난달 이월분. 그 달 일수를 넘지 않는다.
+    나이트 전담은 나이트(=근무일)가 월 15회를 넘지 않도록 그 달 일수 - 15 이상
+    """
+    if r.off_target <= 0:
+        return r.off_target
+    target = min(len(r.days()), r.off_target + r.off_carry.get(n.id, 0))
+    if n.duty_role == DutyRole.NIGHT_ONLY:
+        return max(target, len(r.days()) - NIGHT_ONLY_MAX_NIGHTS)
+    return target
+
+
+def unused_offs(r: Roster) -> dict:
+    """그 달에 OFF 목표보다 덜 쉰 만큼 (다음 달로 이월). 그 달 내내 소속인 교대 근무 간호사만, 초과 사용은 깎지 않는다"""
+    days = r.days()
+    out = {}
+    for n in r.nurses:
+        if r.off_target <= 0 or r.day_fixed(n) or not (n.affiliated(days[0]) and n.affiliated(days[-1])):
+            continue
+        left = off_target(r, n) - sum(1 for d in days if r.cell(n.id, d) in OFFISH)
+        if left > 0:
+            out[n.id] = left
+    return out
 
 
 def has_role(r: Roster, roles) -> bool:
@@ -117,13 +141,26 @@ def _weekly_rest(r: Roster, n, days: list[date]) -> list[Violation]:
 
 
 def coverage(r: Roster, d: date) -> dict[Duty, int]:
-    """SCH-05. 소속 기간 밖·미배정은 세지 않는다."""
+    """SCH-05. 소속 기간 밖·미배정·평일 D 고정(인원 별도)은 세지 않는다."""
     c: Counter[Duty] = Counter()
     for n in r.nurses:
         x = r.cell(n.id, d)
-        if x is not None and n.affiliated(d):
+        if x is not None and n.affiliated(d) and not r.day_fixed(n):
             c[x] += 1
     return dict(c)
+
+
+SKILL_TOLERANCE = 0.5  # 근무별 평균 숙련도가 목표에서 이만큼 넘게 벗어나면 위반
+
+
+def skill_mix(r: Roster, d: date) -> dict[Duty, float]:
+    """듀티별 평균 숙련도. 인원에 세는 간호사만"""
+    by: dict[Duty, list[int]] = {}
+    for n in r.nurses:
+        x = r.cell(n.id, d)
+        if x is not None and x.is_work and n.affiliated(d) and not r.day_fixed(n):
+            by.setdefault(x, []).append(n.skill_level)
+    return {x: sum(v) / len(v) for x, v in by.items()}
 
 
 def has_hard(vs: list[Violation]) -> bool:
