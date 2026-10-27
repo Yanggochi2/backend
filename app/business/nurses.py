@@ -1,65 +1,55 @@
-"""NUR-01~06"""
+"""간호사 관리. 직급·경력·프리셉터 역할은 서로 독립된 값으로 저장한다."""
 import uuid
 from datetime import date
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.business import audit, members, schedules, wards
-from app.business.common import (bad_request, conflict, iso, not_found, page, parse_sort, unprocessable)
+from app.business import audit, members, schedules
+from app.business.common import bad_request, conflict, iso, not_found, page, parse_sort, today_kst, unprocessable
 from app.business.members import Member
-from app.domain.model import DutyRole, NurseStatus, Role
+from app.domain.model import DutyRole, NurseRank, NurseStatus, Role
 from app.persistence.models import Nurse
 
-# 경력·숙련도·입사일 정렬은 그 값을 드러내므로 수간호사만
-SORT_ALL, SORT_HEAD = {"name"}, {"name", "careerMonths", "joinedAt", "skillLevel"}
-_SORT_KEY = {"name": lambda n: n.name, "careerMonths": lambda n: n.career_months, "joinedAt": lambda n: n.joined_at,
-             "skillLevel": lambda n: n.skill_level}
-FIELDS = {"name": "name", "dutyRole": "duty_role", "status": "status", "joinedAt": "joined_at",
-          "careerMonths": "career_months", "skillLevel": "skill_level", "affiliationStart": "affiliation_start",
+SORTS = {"name", "hireYear", "skillLevel", "rank"}
+_SORT_KEY = {"name": lambda n: n.name, "hireYear": lambda n: n.hire_year,
+             "skillLevel": lambda n: n.skill_level, "rank": lambda n: n.rank.value}
+FIELDS = {"name": "name", "rank": "rank", "hireYear": "hire_year", "isPreceptor": "is_preceptor",
+          "status": "status", "skillLevel": "skill_level", "affiliationStart": "affiliation_start",
           "affiliationEnd": "affiliation_end", "preceptorOf": "preceptor_of"}
 
 
-def list_(db: Session, user_id: uuid.UUID, q: str | None, role: Role | None, duty_role: DutyRole | None,
+def list_(db: Session, user_id: uuid.UUID, q: str | None, rank: NurseRank | None,
           status: NurseStatus | None, include_retired: bool, sort: str | None, page_no: int, size: int) -> dict:
-    m = members.require(db, user_id)
-    if status is not None and not m.is_head:
-        # 일반 간호사가 상태 필터로 타인의 임신·휴직 여부를 알아내지 못하게 한다
-        raise bad_request("INVALID_FILTER", "상태 필터는 수간호사만 사용할 수 있습니다", "status")
-    field, desc = parse_sort(sort, SORT_HEAD if m.is_head else SORT_ALL, "name,asc")
+    m = members.require_head(db, user_id)
+    field, desc = parse_sort(sort, SORTS, "name,asc")
     rows = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == m.ward_id))
             if (include_retired or status == NurseStatus.RETIRED or n.status != NurseStatus.RETIRED)
             and (not q or q.strip() in n.name)
-            and (role is None or n.role == role)
-            and (duty_role is None or n.duty_role == duty_role)
+            and (rank is None or n.rank == rank)
             and (status is None or n.status == status)]
     rows.sort(key=lambda n: (_SORT_KEY[field](n), n.name), reverse=desc)
-    # ponytail: 병동 단위(수십 명)라 메모리 필터·페이징. 수천 명 규모면 쿼리로
-    return page([view(n, _full(m, n)) for n in rows[page_no * size:(page_no + 1) * size]], page_no, size, len(rows))
+    return page([view(n) for n in rows[page_no * size:(page_no + 1) * size]], page_no, size, len(rows))
 
 
 def get(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> dict:
-    m = members.require(db, user_id)
-    n = _get(db, m, nurse_id)
-    return view(n, _full(m, n))
+    return view(_get(db, members.require_head(db, user_id), nurse_id))
 
 
 def create(db: Session, user_id: uuid.UUID, f: dict) -> dict:
-    """NUR-01. f는 NurseCreate 필드 (snake_case). role은 받지 않는다 (권한은 AUTH-06·07로만)"""
     m = members.require_head(db, user_id)
     if db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.name == f["name"],
-                                        Nurse.joined_at == f["joined_at"], Nurse.status != NurseStatus.RETIRED)):
-        raise conflict("NURSE_ALREADY_EXISTS", "같은 이름·입사일의 간호사가 이미 있습니다")
-    n = Nurse(ward_id=m.ward_id)
+                                        Nurse.hire_year == f["hire_year"], Nurse.status != NurseStatus.RETIRED)):
+        raise conflict("NURSE_ALREADY_EXISTS", "같은 이름·입사 연도의 간호사가 이미 있습니다")
+    n = Nurse(ward_id=m.ward_id, user_id=None)
     _apply(db, m, n, f)
     db.add(n)
     db.flush()
-    audit.log(db, m.ward_id, user_id, "NURSE_REGISTERED", "NURSE", n.id, None, view(n, True))
-    return view(n, True)
+    audit.log(db, m.ward_id, user_id, "NURSE_REGISTERED", "NURSE", n.id, None, view(n))
+    return view(n)
 
 
 def patch(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, changes: dict, version: int | None) -> dict:
-    """NUR-03·04·05. 부분 수정. 영향받는 근무표 위반을 함께 돌려준다"""
     m = members.require_head(db, user_id)
     n = _get(db, m, nurse_id)
     if n.status == NurseStatus.RETIRED:
@@ -70,23 +60,22 @@ def patch(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, changes: dict, v
         if v is None and k not in ("affiliation_end", "preceptor_of"):
             camel = next(c for c, a in FIELDS.items() if a == k)
             raise bad_request("VALIDATION_ERROR", f"{camel}는 null일 수 없습니다", camel)
-    before = view(n, True)
+    before = view(n)
     current = {attr: getattr(n, attr) for attr in FIELDS.values()}
     current["preceptor_of"] = [uuid.UUID(x) for x in n.preceptor_of or []]
     _apply(db, m, n, {**current, **changes})
     db.flush()
-    audit.log(db, m.ward_id, user_id, "NURSE_UPDATED", "NURSE", n.id, before, view(n, True))
+    audit.log(db, m.ward_id, user_id, "NURSE_UPDATED", "NURSE", n.id, before, view(n))
     return _result(db, m, n)
 
 
 def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> dict:
-    """NUR-06. soft delete. 기존 근무표의 행은 소속 기간만큼 남는다"""
     m = members.require_head(db, user_id)
     n = _get(db, m, nurse_id)
     if n.status == NurseStatus.RETIRED:
         raise conflict("INVALID_RESOURCE_STATE", "이미 퇴사 처리되었습니다")
-    if n.role == Role.HEAD_NURSE and wards.count_heads(db, m.ward_id) <= 1:
-        raise conflict("LAST_HEAD_NURSE", "마지막 수간호사는 권한 이관 후 퇴사할 수 있습니다")
+    if n.rank == NurseRank.HEAD_NURSE:
+        raise conflict("HEAD_NURSE_REQUIRED", "수간호사 1명은 반드시 유지해야 합니다")
     if end < n.affiliation_start:
         raise unprocessable("INVALID_END_DATE", "소속 종료일이 시작일보다 빠릅니다")
     n.status, n.affiliation_end = NurseStatus.RETIRED, end
@@ -96,45 +85,57 @@ def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> d
     return _result(db, m, n)
 
 
-def view(n: Nurse, full: bool) -> dict:
-    """타인의 상태·입사일·경력·숙련도·담당 신입은 수간호사에게만 (1.2). 없는 값은 null"""
-    v = {"id": n.id, "name": n.name, "role": n.role, "dutyRole": n.duty_role,
-         "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
-         "status": None, "joinedAt": None, "careerMonths": None, "skillLevel": None, "preceptorOf": None,
-         "hasAccount": None, "inviteExpiresAt": None, "version": n.version}
-    if full:
-        v.update(status=n.status, joinedAt=iso(n.joined_at), careerMonths=n.career_months, skillLevel=n.skill_level,
-                 preceptorOf=sorted(n.preceptor_of or []), hasAccount=n.user_id is not None,
-                 inviteExpiresAt=iso(n.invite_expires_at) if n.invite_code else None)
-    return v
+def view(n: Nurse) -> dict:
+    return {"id": n.id, "name": n.name, "rank": n.rank, "hireYear": n.hire_year,
+            "isPreceptor": n.is_preceptor, "status": n.status, "skillLevel": n.skill_level,
+            "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
+            "preceptorOf": sorted(n.preceptor_of or []), "version": n.version}
 
 
 def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
+    year = today_kst().year
     if f["status"] == NurseStatus.RETIRED:
         raise unprocessable("BUSINESS_RULE_VIOLATION", "퇴사는 퇴사 처리 API를 사용하세요")
+    if f["hire_year"] > year:
+        raise bad_request("VALIDATION_ERROR", "입사 연도는 현재 연도보다 늦을 수 없습니다", "hireYear")
     if f["affiliation_end"] and f["affiliation_end"] < f["affiliation_start"]:
         raise bad_request("VALIDATION_ERROR", "소속 종료일이 시작일보다 빠릅니다", "affiliationEnd")
+    if f["is_preceptor"] and (f["rank"] != NurseRank.STAFF_NURSE or year - f["hire_year"] not in (5, 6)):
+        raise unprocessable("INVALID_PRECEPTOR",
+                            "프리셉터는 일반 간호사 중 입사 후 5~6년인 간호사만 지정할 수 있습니다")
+    if f["rank"] == NurseRank.HEAD_NURSE:
+        other = db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id,
+                                                 Nurse.rank == NurseRank.HEAD_NURSE,
+                                                 Nurse.status != NurseStatus.RETIRED,
+                                                 Nurse.id != n.id))
+        if other:
+            raise conflict("HEAD_NURSE_ALREADY_EXISTS", "수간호사는 병동에 1명만 둘 수 있습니다")
+    elif n.id is not None and n.rank == NurseRank.HEAD_NURSE:
+        raise conflict("HEAD_NURSE_REQUIRED", "수간호사 1명은 반드시 유지해야 합니다")
     for p in f["preceptor_of"] or []:
         target = db.get(Nurse, p)
         if target is None or target.ward_id != m.ward_id:
             raise not_found("NURSE_NOT_FOUND")
-        if target.duty_role != DutyRole.NEW or p == n.id:
-            raise unprocessable("INVALID_PRECEPTEE", "담당 신입은 같은 병동의 NEW 간호사만 지정할 수 있습니다")
+        if target.skill_level != 1 or p == n.id:
+            raise unprocessable("INVALID_PRECEPTEE", "담당 간호사는 같은 병동의 숙련도 1 간호사만 지정할 수 있습니다")
     for attr in FIELDS.values():
         if attr != "preceptor_of":
             setattr(n, attr, f[attr])
     n.preceptor_of = sorted({str(p) for p in f["preceptor_of"] or []})
+    n.role = Role.HEAD_NURSE if n.rank == NurseRank.HEAD_NURSE else Role.NURSE
+    n.joined_at = date(n.hire_year, 1, 1)
+    n.career_months = max(0, (year - n.hire_year) * 12)
+    n.duty_role = (DutyRole.CHARGE if n.rank == NurseRank.CHARGE_NURSE else
+                   DutyRole.PRECEPTOR if n.is_preceptor else
+                   DutyRole.NEW if n.skill_level == 1 else DutyRole.GENERAL)
 
 
 def _result(db: Session, m: Member, n: Nurse) -> dict:
-    no_charge = not db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.duty_role == DutyRole.CHARGE,
-                                                     Nurse.status != NurseStatus.RETIRED))
-    return {"nurse": view(n, True), "violations": schedules.violations_for(db, m.ward_id, n.id),
-            "warnings": ["병동에 차지 간호사가 없습니다"] if no_charge else []}
-
-
-def _full(m: Member, n: Nurse) -> bool:
-    return m.is_head or n.id == m.nurse_id
+    charge_count = len(db.scalars(select(Nurse.id).where(
+        Nurse.ward_id == m.ward_id, Nurse.rank == NurseRank.CHARGE_NURSE,
+        Nurse.status != NurseStatus.RETIRED)).all())
+    warnings = [] if charge_count == 2 else [f"차지 간호사는 2명이 필요합니다 (현재 {charge_count}명)"]
+    return {"nurse": view(n), "violations": schedules.violations_for(db, m.ward_id, n.id), "warnings": warnings}
 
 
 def _get(db: Session, m: Member, nurse_id: uuid.UUID) -> Nurse:
@@ -146,13 +147,11 @@ def _get(db: Session, m: Member, nurse_id: uuid.UUID) -> Nurse:
 
 def charges(db: Session, user_id: uuid.UUID) -> list[dict]:
     m = members.require_head(db, user_id)
-    return [view(n, True) for n in db.scalars(select(Nurse).where(
-        Nurse.ward_id == m.ward_id, Nurse.duty_role == DutyRole.CHARGE,
+    return [view(n) for n in db.scalars(select(Nurse).where(
+        Nurse.ward_id == m.ward_id, Nurse.rank == NurseRank.CHARGE_NURSE,
         Nurse.status != NurseStatus.RETIRED).order_by(Nurse.name, Nurse.id))]
 
 
 def set_charge(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, is_charge: bool, version: int) -> dict:
-    m = members.require_head(db, user_id)
-    n = _get(db, m, nurse_id)
-    duty_role = DutyRole.CHARGE if is_charge else (DutyRole.GENERAL if n.duty_role == DutyRole.CHARGE else n.duty_role)
-    return patch(db, user_id, nurse_id, {"duty_role": duty_role}, version)
+    rank = NurseRank.CHARGE_NURSE if is_charge else NurseRank.STAFF_NURSE
+    return patch(db, user_id, nurse_id, {"rank": rank}, version)

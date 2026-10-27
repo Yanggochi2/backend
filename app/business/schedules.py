@@ -12,7 +12,7 @@ from app.business.common import (ApiException, bad_request, conflict, iso, month
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
 from app.domain import validator
-from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Roster,
+from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Role, Roster,
                               ScheduleStatus, Severity, Violation)
 from app.persistence.db import now
 from app.persistence.models import Assignment, Nurse, Schedule, User, WorkRequest
@@ -53,6 +53,36 @@ def get_by_month(db: Session, user_id: uuid.UUID, ym: str) -> dict:
 def get(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
     m = members.require(db, user_id)
     return view(db, find(db, m, schedule_id), m)
+
+
+def create_share(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
+    """확정된 근무표의 읽기 전용 공유 링크를 새로 발급한다. 재발급하면 이전 링크는 즉시 만료된다."""
+    m = members.require_head(db, user_id)
+    s = find(db, m, schedule_id)
+    if s.status not in VISIBLE_TO_NURSES:
+        raise conflict("SCHEDULE_NOT_CONFIRMED", "확정된 근무표만 공유할 수 있습니다")
+    token = secrets.token_urlsafe(32)
+    s.share_token_hash = sha256(token)
+    s.shared_at = now()
+    audit.log(db, m.ward_id, user_id, "SCHEDULE_SHARE_CREATED", "SCHEDULE", s.id, None, s.year_month)
+    return {"token": token, "path": f"/shared/schedules/{token}", "sharedAt": iso(s.shared_at)}
+
+
+def public_share(db: Session, token: str) -> dict:
+    """비밀 링크를 가진 누구나 보는 읽기 전용 확정 근무표."""
+    s = db.scalar(select(Schedule).where(Schedule.share_token_hash == sha256(token)))
+    if s is None or s.status not in VISIBLE_TO_NURSES:
+        raise not_found("SHARED_SCHEDULE_NOT_FOUND")
+    data = view(db, s, Member(uuid.UUID(int=0), s.ward_id, uuid.UUID(int=0), Role.HEAD_NURSE))
+    for cell in data["cells"]:
+        cell["editable"] = False
+    for nurse in data["nurses"]:
+        nurse.pop("nightBlocked", None)
+    # 공유 화면에는 근무표 표현에 필요한 값만 제공하고 임신 여부, 통계, 내부 확인 상태는 노출하지 않는다.
+    data["statistics"] = []
+    for key in ("lock", "readiness", "confirmation", "offTarget"):
+        data.pop(key, None)
+    return data
 
 
 def coverage(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> list[dict]:
@@ -374,7 +404,7 @@ def roster(db: Session, s: Schedule) -> Roster:
 
 
 def view(db: Session, s: Schedule, m: Member) -> dict:
-    """역할에 따라 필드 차등: 임신 여부(nightBlocked)·잠금·확정 가능 여부는 수간호사만, 통계는 본인만"""
+    """단일 병동 관리자용 근무표 상세."""
     r = roster(db, s)
     holidays = rules.holiday_dates(db, s.ward_id, r.month)
     status = {n.id: n.status for n in r.nurses}
@@ -386,7 +416,8 @@ def view(db: Session, s: Schedule, m: Member) -> dict:
             cells.append({"nurseId": n.id, "date": d.isoformat(), "dutyCode": x,
                           "editable": can_edit and n.affiliated(d) and x != Duty.AL})
     return {"id": s.id, "yearMonth": s.year_month, "status": s.status, "version": s.version,
-            "nurses": [{"id": n.id, "name": n.name, "dutyRole": n.duty_role,
+            "nurses": [{"id": n.id, "name": n.name, "rank": n.rank, "hireYear": n.hire_year,
+                        "isPreceptor": n.is_preceptor,
                         "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
                         "nightBlocked": status[n.id] == NurseStatus.PREGNANT if m.is_head else None}
                        for n in r.nurses],

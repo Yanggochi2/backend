@@ -1,20 +1,18 @@
 """
-API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 항상 세션 사용자의 소속 병동이 대상이다 (1.2).
+API 라우트 (/api/v1). 로그인 없이 단일 병동 관리자 화면에서 사용한다.
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Header, Query, Response, UploadFile
 
-from app.business import (audit, auth, excel, generations, notifications, nurses, off_deadlines, requests, rules,
-                          schedules, wards)
+from app.business import audit, excel, generations, nurses, rules, schedules, wards
 from app.business.common import ApiException, parse_month
-from app.domain.model import DutyRole, NotificationType, NurseStatus, RequestStatus, RequestType, Role, Severity
+from app.domain.model import NurseRank, NurseStatus, Severity
 from app.presentation import schemas as s
-from app.presentation.deps import (ACCESS, DB, PREFIX, REFRESH, Page, TxRoute, UserId, clear_auth_cookies,
-                                   set_auth_cookies)
+from app.presentation.deps import DB, PREFIX, Page, TxRoute, UserId
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
 MAX_UPLOAD = 10 * 1024 * 1024  # 🔶 권장 10MB
@@ -36,108 +34,9 @@ def _utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None) if dt and dt.tzinfo else dt
 
 
-# --- 인증 (AUTH-01·05)
-@api.post("/auth/signup", status_code=201)
-def signup(body: s.Signup, db: DB, request: Request, response: Response):
-    """가입과 동시에 로그인 쿠키를 발급한다"""
-    user, tokens = auth.signup(db, body.name, body.email, body.password, request.client.host if request.client else "")
-    set_auth_cookies(response, tokens)
-    return _d(user)
-
-
-@api.post("/auth/login")
-def login(body: s.Login, db: DB, response: Response):
-    user, tokens = auth.login(db, body.email, body.password)
-    set_auth_cookies(response, tokens)
-    return _d(user)
-
-
-@api.post("/auth/refresh")
-def refresh(request: Request, db: DB, response: Response):
-    user, tokens = auth.refresh(db, request.cookies.get(REFRESH))
-    set_auth_cookies(response, tokens)
-    return _d(user)
-
-
-@api.post("/auth/logout", status_code=204)
-def logout(db: DB, request: Request, response: Response):
-    """액세스가 만료돼도 리프레시 쿠키로 세션을 끝낼 수 있게 인증을 요구하지 않는다"""
-    auth.logout(db, request.cookies.get(ACCESS), request.cookies.get(REFRESH))
-    clear_auth_cookies(response)
-
-
-@api.get("/me")
-def me(user_id: UserId, db: DB):
-    return _d(auth.me(db, user_id))
-
-
-@api.delete("/me", status_code=204)
-def withdraw(body: s.Withdraw, user_id: UserId, db: DB, response: Response):
-    """계정 탈퇴. 비밀번호 재확인"""
-    auth.withdraw(db, user_id, body.password)
-    clear_auth_cookies(response)
-
-
-# --- 병동·가입 (AUTH-03~07)
-@api.post("/wards", status_code=201)
-def create_ward(body: s.CreateWard, user_id: UserId, db: DB):
-    return _d(wards.create(db, user_id, body.hospital_name, body.ward_name, body.required_staff, body.rule_preset))
-
-
 @api.get("/wards/me")
 def my_ward(user_id: UserId, db: DB):
     return _d(wards.get(db, user_id))
-
-
-@api.post("/ward-membership-requests", status_code=201)
-def request_membership(body: s.JoinRequest, user_id: UserId, db: DB):
-    return _d(wards.request_join(db, user_id, body.join_code))
-
-
-@api.post("/wards/me/membership/leave", status_code=204)
-def leave_ward(user_id: UserId, db: DB):
-    wards.leave(db, user_id)
-
-
-@api.delete("/ward-membership-requests/me", status_code=204)
-def cancel_membership_request(user_id: UserId, db: DB):
-    """대기 중인 내 가입 신청 취소"""
-    wards.cancel_request(db, user_id)
-
-
-@api.get("/wards/me/membership-requests")
-def membership_requests(user_id: UserId, db: DB, p: Page, status: RequestStatus | None = None):
-    return wards.list_requests(db, user_id, status, p.page, p.size)
-
-
-@api.post("/wards/me/membership-requests/{request_id}/approve")
-def approve_membership(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.ApproveMembership | None = None):
-    return _d(wards.approve(db, user_id, request_id, body.nurse_id if body else None))
-
-
-@api.post("/wards/me/membership-requests/{request_id}/reject")
-def reject_membership(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
-    return _d(wards.reject(db, user_id, request_id, body.reason if body else None))
-
-
-@api.get("/wards/me/join-code")
-def join_code(user_id: UserId, db: DB):
-    return _d(wards.join_code(db, user_id))
-
-
-@api.post("/wards/me/join-code/rotate")
-def rotate_join_code(user_id: UserId, db: DB):
-    return _d(wards.rotate_code(db, user_id))
-
-
-@api.post("/wards/me/head-nurses/{nurse_id}/grant")
-def grant_head(nurse_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(wards.grant_head(db, user_id, nurse_id))
-
-
-@api.post("/wards/me/head-nurse-transfer")
-def transfer_head(body: s.Transfer, user_id: UserId, db: DB):
-    return _d(wards.transfer_head(db, user_id, body.target_nurse_id))
 
 
 # --- 간호사 (NUR)
@@ -146,27 +45,11 @@ def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
     return _d(nurses.create(db, user_id, body.model_dump()))
 
 
-@api.post("/wards/me/nurses/{nurse_id}/invite-code", status_code=201)
-def issue_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(wards.issue_invite(db, user_id, nurse_id))
-
-
-@api.post("/wards/me/nurses/{nurse_id}/unlink-account")
-def unlink_account(nurse_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
-    """잘못 연결된 계정 해제. 행은 유지되고 새 초대 코드를 발급할 수 있다"""
-    return _d(wards.unlink_account(db, user_id, nurse_id, body.reason if body else None))
-
-
-@api.delete("/wards/me/nurses/{nurse_id}/invite-code", status_code=204)
-def revoke_invite(nurse_id: uuid.UUID, user_id: UserId, db: DB):
-    wards.revoke_invite(db, user_id, nurse_id)
-
-
 @api.get("/wards/me/nurses")
-def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, role: Role | None = None,
-                dutyRole: DutyRole | None = None, status: NurseStatus | None = None,  # noqa: N803
+def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, rank: NurseRank | None = None,
+                status: NurseStatus | None = None,
                 includeRetired: bool = False, sort: str | None = None):  # noqa: N803
-    return nurses.list_(db, user_id, q, role, dutyRole, status, includeRetired, sort, p.page, p.size)
+    return nurses.list_(db, user_id, q, rank, status, includeRetired, sort, p.page, p.size)
 
 
 @api.get("/wards/me/nurses/{nurse_id}")
@@ -236,6 +119,16 @@ def schedule_by_month(yearMonth: str, user_id: UserId, db: DB):  # noqa: N803
 @api.get("/wards/me/schedules/{schedule_id}")
 def get_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(schedules.get(db, user_id, schedule_id))
+
+
+@api.post("/wards/me/schedules/{schedule_id}/share")
+def share_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(schedules.create_share(db, user_id, schedule_id))
+
+
+@api.get("/public/schedules/{token}")
+def shared_schedule(token: str, db: DB):
+    return _d(schedules.public_share(db, token))
 
 
 @api.patch("/wards/me/schedules/{schedule_id}/cells")
@@ -334,46 +227,6 @@ def apply_partial(job_id: uuid.UUID, body: s.BaseVersion, user_id: UserId, db: D
     return _d(generations.apply_partial(db, user_id, job_id, body.base_version, lock))
 
 
-# --- 신청 (REQ). /requests/me는 /requests/{id}보다 먼저 선언
-@api.post("/wards/me/requests", status_code=201)
-def create_request(body: s.WorkRequestCreate, user_id: UserId, db: DB):
-    return _d(requests.create(db, user_id, body.type, body.target_dates, body.reason_code, body.reason_detail,
-                              body.preferred_duty))
-
-
-@api.get("/wards/me/requests/me")
-def my_requests(user_id: UserId, db: DB, p: Page, yearMonth: str | None = None,  # noqa: N803
-                type: RequestType | None = None, status: RequestStatus | None = None):  # noqa: A002
-    return requests.mine(db, user_id, yearMonth, type, status, p.page, p.size)
-
-
-@api.get("/wards/me/requests")
-def ward_requests(user_id: UserId, db: DB, p: Page, applicantId: uuid.UUID | None = None,  # noqa: N803
-                  yearMonth: str | None = None, type: RequestType | None = None,  # noqa: N803,A002
-                  status: RequestStatus | None = None):
-    return requests.ward(db, user_id, applicantId, yearMonth, type, status, p.page, p.size)
-
-
-@api.get("/wards/me/requests/{request_id}")
-def get_request(request_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(requests.get(db, user_id, request_id))
-
-
-@api.post("/wards/me/requests/{request_id}/approve")
-def approve_request(request_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(requests.approve(db, user_id, request_id))
-
-
-@api.post("/wards/me/requests/{request_id}/reject")
-def reject_request(request_id: uuid.UUID, user_id: UserId, db: DB, body: s.Reason | None = None):
-    return _d(requests.reject(db, user_id, request_id, body.reason if body else None))
-
-
-@api.post("/wards/me/requests/{request_id}/cancel")
-def cancel_request(request_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(requests.cancel(db, user_id, request_id))
-
-
 @api.get("/wards/me/charges")
 def list_charges(user_id: UserId, db: DB):
     return _d(nurses.charges(db, user_id))
@@ -392,41 +245,6 @@ def rule_catalog(user_id: UserId, db: DB):
 @api.delete("/wards/me/holidays/{day}", status_code=204)
 def reset_holiday(day: date, user_id: UserId, db: DB):
     rules.delete_holiday(db, user_id, day)
-
-
-@api.get("/wards/me/off-request-deadlines/{year_month}")
-def get_off_deadline(year_month: str, user_id: UserId, db: DB):
-    ym = parse_month(year_month).strftime("%Y-%m")
-    return _d(off_deadlines.get(db, user_id, ym))
-
-
-@api.put("/wards/me/off-request-deadlines/{year_month}")
-def put_off_deadline(year_month: str, body: s.OffDeadlinePut, user_id: UserId, db: DB):
-    ym = parse_month(year_month).strftime("%Y-%m")
-    return _d(off_deadlines.put(db, user_id, ym, body.closes_at, body.manually_closed, body.version))
-
-
-# --- 알림 (NOTI). 본인 것만
-@api.get("/me/notifications")
-def my_notifications(user_id: UserId, db: DB, p: Page, unreadOnly: bool = False,  # noqa: N803
-                     type: NotificationType | None = None):  # noqa: A002
-    return notifications.list_(db, user_id, unreadOnly, type, p.page, p.size)
-
-
-@api.patch("/me/notifications/{notification_id}")
-def patch_notification(notification_id: uuid.UUID, body: s.NotificationPatch, user_id: UserId, db: DB):
-    return _d(notifications.mark(db, user_id, notification_id, body.read))
-
-
-@api.get("/me/notification-settings")
-def notification_settings(user_id: UserId, db: DB):
-    return _d(notifications.settings(db, user_id))
-
-
-@api.patch("/me/notification-settings")
-def patch_notification_settings(body: s.NotificationSettingsPatch, user_id: UserId, db: DB):
-    changes = {k: v for k, v in body.model_dump(by_alias=True, exclude_unset=True).items() if v is not None}
-    return _d(notifications.update_settings(db, user_id, changes))
 
 
 # --- 감사 로그 (SEC-03)

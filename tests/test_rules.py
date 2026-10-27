@@ -25,7 +25,8 @@ def test_detects_hard_violations():
     rules = Rules.preset(Preset.STANDARD, 0, 0, 0)
     rules.settings["MAX_CONSECUTIVE_NIGHTS"] = replace(rules.settings["MAX_CONSECUTIVE_NIGHTS"], parameters={"max": 1})
     rules.settings["MAX_CONSECUTIVE_WORK"] = replace(rules.settings["MAX_CONSECUTIVE_WORK"], parameters={"max": 31})
-    rules.settings["CHARGE_DAY_ONLY"] = replace(rules.settings["CHARGE_DAY_ONLY"], parameters={"allowedDuties": ["D"]})
+    rules.settings["CHARGE_DAY_ONLY"] = replace(rules.settings["CHARGE_DAY_ONLY"], enabled=True,
+                                                 parameters={"allowedDuties": ["D"]})
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님. 3번의 N N D는 역순환이면서 야간 후 휴식 부족
@@ -117,6 +118,7 @@ def test_generator_respects_previous_month_streak():
 def test_wish_duty_is_preferred_and_checked():
     """리뷰 #9: 희망 근무는 생성에 반영되고, 미반영 시 소프트 위반"""
     rules = Rules.preset(Preset.STANDARD, 1, 0, 0)
+    rules.settings["WISH_DUTY_IGNORED"] = replace(rules.settings["WISH_DUTY_IGNORED"], enabled=True)
     ns = [nurse(1), nurse(2)]
     wish = {2: {START: Duty.D}}
     cells = generate(Roster(OCT, ns, {}, rules, 0, wish_duties=wish))

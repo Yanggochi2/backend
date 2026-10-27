@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.business import audit, members, notifications, nurses, requests, rules, schedules
 from app.business.common import (RateLimiter, conflict, forbidden, iso, not_found, page, require_reason, today_kst,
                                  unprocessable)
-from app.domain.model import NotificationType, NurseStatus, Preset, RequestStatus, Role
+from app.domain.model import NotificationType, NurseRank, NurseStatus, Preset, RequestStatus, Role
 from app.persistence.db import now
 from app.persistence.models import MembershipRequest, Nurse, User, Ward
 
@@ -48,7 +48,8 @@ def create(db: Session, user_id: uuid.UUID, hospital_name: str, ward_name: str, 
     db.flush()
     rules.seed(db, w.id, preset, staff)
     n = Nurse(ward_id=w.id, user_id=user_id, name=db.get(User, user_id).name, role=Role.HEAD_NURSE,
-              joined_at=today_kst(), affiliation_start=today_kst())
+              rank=NurseRank.HEAD_NURSE, hire_year=today_kst().year, joined_at=today_kst(),
+              affiliation_start=today_kst())
     db.add(n)
     db.flush()
     audit.log(db, w.id, user_id, "WARD_CREATED", "WARD", w.id, None, f"{hospital_name} {ward_name}")
@@ -196,6 +197,7 @@ def approve(db: Session, user_id: uuid.UUID, request_id: uuid.UUID, link_nurse_i
         n.invite_code = n.invite_expires_at = None  # 만료된 코드가 남아 있으면 정리
     else:
         n = Nurse(ward_id=m.ward_id, user_id=j.user_id, name=db.get(User, j.user_id).name,
+                  rank=NurseRank.STAFF_NURSE, hire_year=today_kst().year,
                   joined_at=today_kst(), affiliation_start=today_kst())
         db.add(n)
     j.status, j.processed_at, j.processed_by = RequestStatus.APPROVED, now(), user_id

@@ -36,7 +36,8 @@ def test_max_parameter_changes_generator_and_validator():
 
 def test_charge_parameter_and_disabled_or_soft_rule():
     # 기본은 D·E·N 모두 허용 → D만 허용으로 좁혀 검사
-    base = update(Rules.preset(Preset.STANDARD, 0, 1, 0), "CHARGE_DAY_ONLY", parameters={"allowedDuties": ["D"]})
+    base = update(Rules.preset(Preset.STANDARD, 0, 1, 0), "CHARGE_DAY_ONLY", enabled=True,
+                  parameters={"allowedDuties": ["D"]})
     ns = [nurse(1, DutyRole.CHARGE)]
     r = Roster(DAY, ns, {}, base, 0)
     assert not can_assign(r, ns[0], Duty.E, DAY)

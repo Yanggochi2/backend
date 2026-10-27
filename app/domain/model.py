@@ -26,12 +26,19 @@ class Role(StrEnum):
 
 
 class DutyRole(StrEnum):
-    """NUR-05 배정 규칙용 속성. 권한(Role)과 별개."""
+    """자동 생성 내부 분류. 외부 입력은 NurseRank·숙련도·프리셉터 속성으로 받는다."""
     CHARGE = "CHARGE"
     PRECEPTOR = "PRECEPTOR"
     NEW = "NEW"
     GENERAL = "GENERAL"
     NIGHT_ONLY = "NIGHT_ONLY"  # 나이트 전담: N과 OFF만, 월 나이트 15일 이내 (복지부 야간근무 가이드라인)
+
+
+class NurseRank(StrEnum):
+    """조직상 직급. 프리셉터와 경력은 직급과 독립된 속성이다."""
+    HEAD_NURSE = "HEAD_NURSE"
+    CHARGE_NURSE = "CHARGE_NURSE"
+    STAFF_NURSE = "STAFF_NURSE"
 
 
 class NurseStatus(StrEnum):
@@ -178,6 +185,9 @@ class NurseInfo:
     affiliation_start: date
     affiliation_end: date | None = None
     preceptees: frozenset = frozenset()
+    rank: NurseRank = NurseRank.STAFF_NURSE
+    hire_year: int | None = None
+    is_preceptor: bool = False
 
     def affiliated(self, d: date) -> bool:
         return self.affiliation_start <= d and (self.affiliation_end is None or d <= self.affiliation_end)
