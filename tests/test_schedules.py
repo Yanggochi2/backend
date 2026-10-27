@@ -1,4 +1,6 @@
 """API-SCH-01~08 근무표 생성·조회·편집·확정"""
+from datetime import timedelta
+
 from conftest import NURSE, YM, NEXT, add_nurses, err, fill_rotation, member, ward_head
 
 
@@ -88,3 +90,19 @@ def test_nurse_view_after_confirm_and_cancel():
     assert d["status"] == "DRAFT" and d["confirmation"]["cancelReason"] == "인력 변동"
     err(h("POST", url, {"reason": "x"}), 409, "INVALID_SCHEDULE_STATE")
     err(n("GET", f"/wards/me/schedules/{s['id']}"), 404, "SCHEDULE_NOT_FOUND")
+
+
+def test_unused_offs_of_confirmed_month_carry_over():
+    h, s = _ward_with_schedule()
+    s = fill_rotation(h, s)
+    # 목표를 높여 OFF를 다 못 쓰게 한다 → 확정 후 남은 OFF가 다음 달 목표에 더해진다
+    h.data("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": 20, "reason": "이월 확인"})
+    s = h.data("GET", f"/wards/me/schedules/{s['id']}")
+    left = {x["nurseId"]: 20 - x["O"] - x["AL"] for x in s["statistics"]}
+    soft = [v["id"] for v in h.data("GET", f"/wards/me/schedules/{s['id']}/violations?size=100")]
+    h.data("POST", f"/wards/me/schedules/{s['id']}/confirm", {"acknowledgedSoftViolationIds": soft})
+    after = (NEXT + timedelta(days=32)).strftime("%Y-%m")
+    nxt = h.data("POST", "/wards/me/schedules", {"yearMonth": after}, status=201)
+    base = h.data("GET", f"/wards/me/off-targets/{after}")["targetCount"]
+    for x in nxt["statistics"]:
+        assert x["offCarry"] == left[x["nurseId"]] > 0 and x["offTarget"] == min(31, base + x["offCarry"])

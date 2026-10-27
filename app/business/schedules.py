@@ -12,8 +12,8 @@ from app.business.common import (ApiException, bad_request, conflict, iso, month
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
 from app.domain import validator
-from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Roster,
-                              ScheduleStatus, Severity, Violation)
+from app.domain.model import (Cells, Duty, DutyRole, NotificationType, NurseStatus, RequestStatus, RequestType, Role,
+                              Roster, ScheduleStatus, Severity, Violation)
 from app.persistence.db import now
 from app.persistence.models import Assignment, Nurse, Schedule, User, WorkRequest
 
@@ -369,8 +369,12 @@ def roster(db: Session, s: Schedule) -> Roster:
             wish_duties.setdefault(q.nurse_id, {})[d] = q.preferred_duty
     # 연속 야간·근무를 월 경계 너머로 세기 위해 이전 달 근무표를 함께 넘긴다
     prev = by_month(db, s.ward_id, (first - timedelta(days=1)).replace(day=1))
+    # 확정된 지난달에 다 못 쓴 OFF는 이번 달 목표에 더한다 (지난달 이월분까지 포함해 누적)
+    # ponytail: 이월분을 저장하지 않고 확정된 달을 거슬러 올라가며 매번 계산. 느려지면 확정 시 이월분을 저장
+    carry = validator.unused_offs(roster(db, prev)) if prev and prev.status in VISIBLE_TO_NURSES else {}
     return Roster(first, [n.info() for n in nurses], _cells(db, s.id), rules.load(db, s.ward_id),
-                  _off_target(db, s), wish_offs, wish_duties, _cells(db, prev.id) if prev else {})
+                  _off_target(db, s), wish_offs, wish_duties, _cells(db, prev.id) if prev else {},
+                  frozenset(rules.holiday_dates(db, s.ward_id, first)), carry)
 
 
 def view(db: Session, s: Schedule, m: Member) -> dict:
@@ -475,7 +479,9 @@ def _stat(r: Roster, nurse_id, holidays: set[date]) -> dict:
             weekend += 1
         if x.is_work and d in holidays:
             holiday += 1
-    return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": r.off_target,
+    n = next(n for n in r.nurses if n.id == nurse_id)
+    return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": validator.off_target(r, n),
+            "offCarry": r.off_carry.get(nurse_id, 0),
             "weekendWork": weekend, "holidayWork": holiday}
 
 
@@ -517,6 +523,9 @@ def _automatic_off_target(db: Session, s: Schedule) -> int:
     month_days = (last - first).days + 1
     nurses = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == s.ward_id))
               if n.affiliation_start <= last and (n.affiliation_end is None or n.affiliation_end >= first)]
+    # 평일 D 고정(수간호사·차지)은 듀티별 인원 밖이라 근무 슬롯을 나눠 갖지 않는다
+    if rules.load(db, s.ward_id).enabled("DAY_FIXED"):
+        nurses = [n for n in nurses if n.role != Role.HEAD_NURSE and n.duty_role != DutyRole.CHARGE]
     if not nurses:
         return 0
     available_days = sum(

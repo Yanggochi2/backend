@@ -5,17 +5,18 @@ GEN-01 대체 생성기 (CP-SAT이 시간 안에 해를 못 찾을 때). 날짜 
 휴직(ON_LEAVE) 간호사는 배정하지 않는다(O).
 """
 from app.domain.model import Cells, Duty, DutyRole, NurseStatus, Roster
-from app.domain.rule_engine import can_assign
-from app.domain.validator import coverage
+from app.domain.rule_engine import can_assign, fill_day_fixed
+from app.domain.validator import coverage, off_target
 
 
 def generate(r: Roster) -> Cells:
+    r = fill_day_fixed(r)
     cells: Cells = {n.id: dict(r.cells.get(n.id, {})) for n in r.nurses}
     cur = r.with_cells(cells)
     days = r.days()
     worked = {n.id: sum(1 for duty in cells[n.id].values() if duty.is_work) for n in r.nurses}
     work_goal = {
-        n.id: max(0, sum(n.affiliated(d) for d in days) - r.off_target)
+        n.id: max(0, sum(n.affiliated(d) for d in days) - off_target(r, n))
         for n in r.nurses
     }
 
