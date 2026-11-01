@@ -23,7 +23,7 @@ def validate(r: Roster) -> list[Violation]:
             out.extend(assignment_violations(r, n, d))
             out.extend(_patterns(r, n, d, x))
 
-            if x in (Duty.O, Duty.AL):
+            if x == Duty.O and n.affiliated(d):
                 offs += 1
             if d in wish and x not in (Duty.O, Duty.AL):
                 out.append(Violation(SOFT, "WISH_OFF_IGNORED", n.id, d, x, "희망 오프 미반영"))
@@ -37,7 +37,7 @@ def validate(r: Roster) -> list[Violation]:
 
         tolerance = rules.parameter("OFF_TARGET", "maxDeviation")
         target = off_target(r, n)
-        if n.affiliated(days[0]) and n.affiliated(days[-1]) and abs(offs - target) > tolerance:
+        if not n.weekday_only and n.status != NurseStatus.ON_LEAVE and abs(offs - target) > tolerance:
             direction = "과다" if offs > target else "부족"
             out.append(Violation(
                 SOFT, "OFF_TARGET", n.id, None, None,
@@ -53,7 +53,7 @@ def validate(r: Roster) -> list[Violation]:
         count = coverage(r, d)
         for duty in (Duty.D, Duty.E, Duty.N):
             need, have = rules.required(duty), count.get(duty, 0)
-            if have != need:
+            if have < need:
                 direction = "부족" if have < need else "초과"
                 out.append(Violation(
                     HARD, "COVERAGE", None, d, duty,
@@ -74,10 +74,16 @@ OFFISH = (Duty.O, Duty.AL)
 
 
 def off_target(r: Roster, n) -> int:
-    """간호사의 월 OFF 목표. 나이트 전담은 나이트(=근무일)가 월 15회를 넘지 않도록 그 달 일수 - 15 이상"""
+    """O만 센다. 연차·교육은 별도. 차지는 주5일, 중도 소속은 월 목표 비례."""
+    days = [d for d in r.days() if n.affiliated(d)]
+    if n.status == NurseStatus.ON_LEAVE:
+        return len(days)
+    if n.weekday_only:
+        return sum(d.weekday() >= 5 or d in r.holidays for d in days)
+    target = (r.off_target * len(days) + len(r.days()) // 2) // len(r.days())
     if n.duty_role == DutyRole.NIGHT_ONLY and r.off_target > 0:
-        return max(r.off_target, len(r.days()) - NIGHT_ONLY_MAX_NIGHTS)
-    return r.off_target
+        target = max(target, len(days) - NIGHT_ONLY_MAX_NIGHTS)
+    return target
 
 
 def has_role(r: Roster, roles) -> bool:

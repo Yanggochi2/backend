@@ -108,6 +108,7 @@ class Nurse(Base):
     duty_role: Mapped[DutyRole] = mapped_column(_enum(DutyRole), default=DutyRole.GENERAL)
     status: Mapped[NurseStatus] = mapped_column(_enum(NurseStatus), default=NurseStatus.ACTIVE)
     joined_at: Mapped[date]
+    is_preceptor: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     career_months: Mapped[int] = mapped_column(default=0)
     skill_level: Mapped[int] = mapped_column(default=1)
     affiliation_start: Mapped[date]
@@ -121,7 +122,8 @@ class Nurse(Base):
 
     def info(self) -> NurseInfo:
         return NurseInfo(self.id, self.name, self.duty_role, self.status, self.affiliation_start,
-                         self.affiliation_end, frozenset(uuid.UUID(x) for x in self.preceptor_of or []))
+                         self.affiliation_end, frozenset(uuid.UUID(x) for x in self.preceptor_of or []),
+                         self.role, self.career_months, self.is_preceptor or self.duty_role == DutyRole.PRECEPTOR)
 
 
 class Holiday(Base):
@@ -285,4 +287,27 @@ class OffRequestDeadline(Base):
     closes_at: Mapped[datetime | None]
     manually_closed: Mapped[bool] = mapped_column(default=False)
     version: Mapped[int] = mapped_column(default=0)
+    __mapper_args__ = {"version_id_col": version}
+
+
+class WardAccess(Base):
+    """로그인 없는 편집 권한. 비밀 토큰 원문을 저장하지 않는다."""
+    __tablename__ = "ward_access"
+    id: Mapped[PK]
+    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), unique=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=now)
+    version: Mapped[int] = mapped_column(default=1)
+    __mapper_args__ = {"version_id_col": version}
+
+
+class ScheduleShare(Base):
+    """확정본 조회 전용 링크. 교체·폐기 후 이전 토큰은 즉시 무효."""
+    __tablename__ = "schedule_shares"
+    id: Mapped[PK]
+    schedule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("schedules.id"), unique=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=now)
+    version: Mapped[int] = mapped_column(default=1)
     __mapper_args__ = {"version_id_col": version}

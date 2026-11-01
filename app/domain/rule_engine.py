@@ -14,6 +14,11 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
         if rules.enabled(code):
             out.append(Violation(rules.severity_for(code), code, n.id, d, x, message))
 
+    if (n.weekday_only and n.status != NurseStatus.ON_LEAVE and n.affiliated(d)
+            and x is not None and x not in (Duty.AL, Duty.ED)):
+        expected = Duty.O if d.weekday() >= 5 or d in r.holidays else Duty.D
+        if x != expected:
+            add("WEEKDAY_DAY_ONLY", "수간호사·차지는 평일 D, 주말·공휴일 O 근무입니다")
     if x is not None and not n.affiliated(d):
         add("OUT_OF_AFFILIATION", f"{n.name} 소속 기간 밖 배정")
     if n.duty_role == DutyRole.CHARGE and x and x.is_work and x not in rules.parameter("CHARGE_DAY_ONLY", "allowedDuties"):
@@ -34,7 +39,7 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
             add(code, f"연속 근무 {count}일 (최대 {limit})")
     one = timedelta(days=1)
     p1, p2, p3 = (r.cell(n.id, d - k * one) for k in (1, 2, 3))
-    if (p1, x) in REVERSE:
+    if (p1, Duty.D if x == Duty.ED else x) in REVERSE:
         add("NIGHT_TO_DAY", f"역순환 {p1}→{x} (근무 사이 휴식 11시간 미만)")
     # 야간 2일 이상 연속 후 48시간(OFF 2일) 휴식
     if x is not None and x.is_work and ((x != Duty.N and p1 == Duty.N and p2 == Duty.N)

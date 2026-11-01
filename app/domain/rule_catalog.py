@@ -13,20 +13,21 @@ class RuleDef:
 
 
 CATALOG = {
-    "COVERAGE": RuleDef("듀티별 정확한 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
+    "COVERAGE": RuleDef("듀티별 최소 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
     "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", "HARD"),
     "NIGHT_REST": RuleDef("야간 2일 연속 후 OFF 2일", "HARD"),
-    # 근무마다 차지 배치와 함께 쓰도록 기본은 D·E·N 모두 허용
-    "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D", "E", "N"]}),
-    "CHARGE_EVERY_SHIFT": RuleDef("근무마다 차지 1명 이상", "HARD"),
-    "SENIOR_EVERY_SHIFT": RuleDef("근무마다 고연차(차지·프리셉터) 1명 이상", "HARD"),
+    # 10/26: 차지는 평일 D, 주말·공휴일 O. 근무마다 차지 배치는 기본 해제.
+    "WEEKDAY_DAY_ONLY": RuleDef("수간호사·차지 평일 D, 주말·공휴일 O", "HARD", locked=True),
+    "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D"]}),
+    "CHARGE_EVERY_SHIFT": RuleDef("근무마다 차지 1명 이상 (이전 기준)", "HARD", enabled=False),
+    "SENIOR_EVERY_SHIFT": RuleDef("근무마다 차지 1명 이상 (이전 고연차 기준)", "HARD", enabled=False),
     "NIGHT_ONLY_SHIFT": RuleDef("나이트 전담은 N만", "HARD", locked=True),
     "PREGNANT_NIGHT": RuleDef("임신 중 N 금지", "HARD", locked=True),
     "NEW_NIGHT_ALONE": RuleDef("신입 N 지원 인원", "HARD", params={"minExperienced": 1}),
     "OUT_OF_AFFILIATION": RuleDef("소속 기간 밖 배정 금지", "HARD", locked=True),
-    "OFF_TARGET": RuleDef("월 OFF 목표", "SOFT", params={"maxDeviation": 1}),
+    "OFF_TARGET": RuleDef("월 OFF 목표", "HARD", params={"maxDeviation": 0}),
     "WISH_OFF_IGNORED": RuleDef("희망 오프 반영", "SOFT"),
     "WISH_DUTY_IGNORED": RuleDef("희망 근무 반영", "SOFT"),
     "PRECEPTOR_MISMATCH": RuleDef("프리셉터·신입 듀티 일치", "SOFT"),

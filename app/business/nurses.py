@@ -6,18 +6,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.business import audit, members, schedules, wards
-from app.business.common import (bad_request, conflict, iso, not_found, page, parse_sort, unprocessable)
+from app.business.common import (bad_request, conflict, iso, not_found, page, unprocessable)
 from app.business.members import Member
 from app.domain.model import DutyRole, NurseStatus, Role
+from app.domain.nurse_sort import sorted_nurses
 from app.persistence.models import Nurse
 
-# 경력·숙련도·입사일 정렬은 그 값을 드러내므로 수간호사만
-SORT_ALL, SORT_HEAD = {"name"}, {"name", "careerMonths", "joinedAt", "skillLevel"}
-_SORT_KEY = {"name": lambda n: n.name, "careerMonths": lambda n: n.career_months, "joinedAt": lambda n: n.joined_at,
-             "skillLevel": lambda n: n.skill_level}
-FIELDS = {"name": "name", "dutyRole": "duty_role", "status": "status", "joinedAt": "joined_at",
-          "careerMonths": "career_months", "skillLevel": "skill_level", "affiliationStart": "affiliation_start",
-          "affiliationEnd": "affiliation_end", "preceptorOf": "preceptor_of"}
+FIELDS = {"name": "name", "dutyRole": "duty_role", "status": "status", "joinedYear": "joined_year",
+          "isPreceptor": "is_preceptor", "careerMonths": "career_months", "skillLevel": "skill_level",
+          "affiliationStart": "affiliation_start", "affiliationEnd": "affiliation_end", "preceptorOf": "preceptor_of"}
 
 
 def list_(db: Session, user_id: uuid.UUID, q: str | None, role: Role | None, duty_role: DutyRole | None,
@@ -26,14 +23,14 @@ def list_(db: Session, user_id: uuid.UUID, q: str | None, role: Role | None, dut
     if status is not None and not m.is_head:
         # 일반 간호사가 상태 필터로 타인의 임신·휴직 여부를 알아내지 못하게 한다
         raise bad_request("INVALID_FILTER", "상태 필터는 수간호사만 사용할 수 있습니다", "status")
-    field, desc = parse_sort(sort, SORT_HEAD if m.is_head else SORT_ALL, "name,asc")
+    sort = normalize_sort(sort)
     rows = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == m.ward_id))
             if (include_retired or status == NurseStatus.RETIRED or n.status != NurseStatus.RETIRED)
             and (not q or q.strip() in n.name)
             and (role is None or n.role == role)
             and (duty_role is None or n.duty_role == duty_role)
             and (status is None or n.status == status)]
-    rows.sort(key=lambda n: (_SORT_KEY[field](n), n.name), reverse=desc)
+    rows = sorted_nurses(rows, sort)
     # ponytail: 병동 단위(수십 명)라 메모리 필터·페이징. 수천 명 규모면 쿼리로
     return page([view(n, _full(m, n)) for n in rows[page_no * size:(page_no + 1) * size]], page_no, size, len(rows))
 
@@ -45,11 +42,13 @@ def get(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> dict:
 
 
 def create(db: Session, user_id: uuid.UUID, f: dict) -> dict:
-    """NUR-01. f는 NurseCreate 필드 (snake_case). role은 받지 않는다 (권한은 AUTH-06·07로만)"""
+    """계정 없이 간호사를 등록한다. role·병동은 서버에서 정한다."""
     m = members.require_head(db, user_id)
+    f = dict(f)
     if db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.name == f["name"],
-                                        Nurse.joined_at == f["joined_at"], Nurse.status != NurseStatus.RETIRED)):
-        raise conflict("NURSE_ALREADY_EXISTS", "같은 이름·입사일의 간호사가 이미 있습니다")
+                                        Nurse.joined_at >= date(f["joined_year"], 1, 1),
+                                        Nurse.joined_at <= date(f["joined_year"], 12, 31), Nurse.status != NurseStatus.RETIRED)):
+        raise conflict("NURSE_ALREADY_EXISTS", "같은 이름·입사 연도의 간호사가 이미 있습니다")
     n = Nurse(ward_id=m.ward_id)
     _apply(db, m, n, f)
     db.add(n)
@@ -71,7 +70,7 @@ def patch(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, changes: dict, v
             camel = next(c for c, a in FIELDS.items() if a == k)
             raise bad_request("VALIDATION_ERROR", f"{camel}는 null일 수 없습니다", camel)
     before = view(n, True)
-    current = {attr: getattr(n, attr) for attr in FIELDS.values()}
+    current = {attr: (n.joined_at.year if attr == "joined_year" else getattr(n, attr)) for attr in FIELDS.values()}
     current["preceptor_of"] = [uuid.UUID(x) for x in n.preceptor_of or []]
     _apply(db, m, n, {**current, **changes})
     db.flush()
@@ -97,13 +96,13 @@ def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> d
 
 
 def view(n: Nurse, full: bool) -> dict:
-    """타인의 상태·입사일·경력·숙련도·담당 신입은 수간호사에게만 (1.2). 없는 값은 null"""
-    v = {"id": n.id, "name": n.name, "role": n.role, "dutyRole": n.duty_role,
+    """관리자 간호사 응답. 입사일 원본은 유지하되 연도만 공개한다."""
+    v = {"id": n.id, "name": n.name, "role": n.role, "dutyRole": DutyRole.GENERAL if n.duty_role == DutyRole.PRECEPTOR else n.duty_role,
          "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
-         "status": None, "joinedAt": None, "careerMonths": None, "skillLevel": None, "preceptorOf": None,
+         "status": None, "joinedYear": None, "isPreceptor": n.is_preceptor or n.duty_role == DutyRole.PRECEPTOR, "careerMonths": None, "skillLevel": None, "preceptorOf": None,
          "hasAccount": None, "inviteExpiresAt": None, "version": n.version}
     if full:
-        v.update(status=n.status, joinedAt=iso(n.joined_at), careerMonths=n.career_months, skillLevel=n.skill_level,
+        v.update(status=n.status, joinedYear=n.joined_at.year, careerMonths=n.career_months, skillLevel=n.skill_level,
                  preceptorOf=sorted(n.preceptor_of or []), hasAccount=n.user_id is not None,
                  inviteExpiresAt=iso(n.invite_expires_at) if n.invite_code else None)
     return v
@@ -114,14 +113,27 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
         raise unprocessable("BUSINESS_RULE_VIOLATION", "퇴사는 퇴사 처리 API를 사용하세요")
     if f["affiliation_end"] and f["affiliation_end"] < f["affiliation_start"]:
         raise bad_request("VALIDATION_ERROR", "소속 종료일이 시작일보다 빠릅니다", "affiliationEnd")
+    if f["duty_role"] == DutyRole.PRECEPTOR:
+        f = {**f, "duty_role": DutyRole.GENERAL, "is_preceptor": True}
+    if f["preceptor_of"] and not f["is_preceptor"]:
+        raise unprocessable("INVALID_PRECEPTOR", "프리셉터를 지정한 간호사만 담당 신입을 연결할 수 있습니다")
+    duplicate = db.scalar(select(Nurse.id).where(
+        Nurse.ward_id == m.ward_id, Nurse.name == f["name"], Nurse.id != n.id,
+        Nurse.joined_at >= date(f["joined_year"], 1, 1), Nurse.joined_at <= date(f["joined_year"], 12, 31),
+        Nurse.status != NurseStatus.RETIRED))
+    if duplicate:
+        raise conflict("NURSE_ALREADY_EXISTS", "같은 이름·입사 연도의 간호사가 이미 있습니다")
     for p in f["preceptor_of"] or []:
         target = db.get(Nurse, p)
         if target is None or target.ward_id != m.ward_id:
             raise not_found("NURSE_NOT_FOUND")
-        if target.duty_role != DutyRole.NEW or p == n.id:
+        if target.duty_role != DutyRole.NEW or target.status == NurseStatus.RETIRED or p == n.id:
             raise unprocessable("INVALID_PRECEPTEE", "담당 신입은 같은 병동의 NEW 간호사만 지정할 수 있습니다")
     for attr in FIELDS.values():
-        if attr != "preceptor_of":
+        if attr == "joined_year":
+            if n.joined_at is None or n.joined_at.year != f[attr]:
+                n.joined_at = date(f[attr], 1, 1)
+        elif attr != "preceptor_of":
             setattr(n, attr, f[attr])
     n.preceptor_of = sorted({str(p) for p in f["preceptor_of"] or []})
 
@@ -156,3 +168,10 @@ def set_charge(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, is_charge: 
     n = _get(db, m, nurse_id)
     duty_role = DutyRole.CHARGE if is_charge else (DutyRole.GENERAL if n.duty_role == DutyRole.CHARGE else n.duty_role)
     return patch(db, user_id, nurse_id, {"duty_role": duty_role}, version)
+
+
+def normalize_sort(sort: str | None) -> str:
+    value = sort or "proficiency"
+    if value not in ("proficiency", "name"):
+        raise bad_request("INVALID_SORT", "정렬은 proficiency 또는 name입니다", "sort")
+    return value

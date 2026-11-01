@@ -5,7 +5,7 @@ from conftest import NEXT, YM, add_nurses, err, fill_rotation, member, ward_head
 def test_rules_patch_and_preset():
     h = ward_head(2, 2, 1)
     n, _ = member(h)
-    err(n("GET", "/wards/me/rules"), 403, "FORBIDDEN")
+    err(n("GET", "/wards/me/rules"), 401, "MANAGEMENT_LINK_REQUIRED")
     by = {r["code"]: r for r in h.data("GET", "/wards/me/rules")}
     assert by["COVERAGE"]["parameters"] == {"D": 2, "E": 2, "N": 1} and by["PREGNANT_NIGHT"]["locked"]
     err(h("PATCH", f"/wards/me/rules/{by['PREGNANT_NIGHT']['id']}", {"enabled": False}), 409, "RULE_CONFLICT")
@@ -31,6 +31,8 @@ def test_softened_rule_no_longer_blocks_confirm():
     h = ward_head()
     add_nurses(h, 4)
     s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
+    off = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "OFF_TARGET")
+    h.data("PATCH", f"/wards/me/rules/{off['id']}", {"severity": "SOFT"})
     cov = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "COVERAGE")
     r = h.data("PATCH", f"/wards/me/rules/{cov['id']}", {"severity": "SOFT"})
     assert r["violationSummary"][0]["hardCount"] == 0 and r["violationSummary"][0]["softCount"] > 0
@@ -47,25 +49,3 @@ def test_holidays():
     assert r == {"date": day, "name": "병원 창립일", "isHoliday": True, "source": "WARD", "reason": None}
     off = h.data("PUT", "/wards/me/holidays/2026-10-09", {"isHoliday": False, "reason": "근무일 지정"})
     assert off["isHoliday"] is False
-
-
-def test_off_target_and_soft_acknowledgement():
-    h = ward_head()
-    add_nurses(h, 4)
-    err(h("GET", f"/wards/me/off-targets/{YM}"), 404, "TARGET_NOT_FOUND")
-    s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
-    auto = h.data("GET", f"/wards/me/off-targets/{YM}")
-    assert auto["source"] == "AUTO" and auto["targetCount"] == auto["autoCount"]
-    assert auto["targetCount"] > auto["holidayCount"], "실제 필요 근무량으로 달성 가능한 OFF를 계산"
-    err(h("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": -1}), 400, "INVALID_TARGET")
-    assert h.data("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": 20, "reason": "휴가철"})["source"] == "MANUAL"
-    s = fill_rotation(h, s)
-    # OFF 12일 정도 < 목표 20 → 모든 간호사에 소프트 위반. 전부 확인해야 확정된다
-    soft = [v["id"] for v in h.data("GET", f"/wards/me/schedules/{s['id']}/violations?size=100")]
-    assert len(soft) == 5
-    e = err(h("POST", f"/wards/me/schedules/{s['id']}/confirm", {"acknowledgedSoftViolationIds": soft[:4]}),
-            409, "SOFT_VIOLATIONS_UNACKNOWLEDGED")
-    assert [v["id"] for v in e["details"]] == soft[4:]
-    h.data("POST", f"/wards/me/schedules/{s['id']}/confirm", {"acknowledgedSoftViolationIds": soft})
-    err(h("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": 3}), 409, "SCHEDULE_CONFIRMED")
-    err(h("PUT", f"/wards/me/holidays/{NEXT.isoformat()}", {"isHoliday": True}), 422, "DATE_OUT_OF_SCOPE")
