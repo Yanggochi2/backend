@@ -4,24 +4,36 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt, StringConstraints, field_validator
+from pydantic import (AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt,
+                      StringConstraints, field_validator)
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import Duty, DutyRole, NurseStatus, Preset, RequestType, Severity
+from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
 
 
+def _password_value(value: str) -> str:
+    if not value or value.isspace():
+        raise ValueError("INVALID_PASSWORD")
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("PASSWORD_TOO_LONG")
+    return value
+
+
+Password = Annotated[str, AfterValidator(_password_value)]
+
+
 class Body(BaseModel):
-    # 정의하지 않은 필드(role, wardId 등)는 무시한다 (AUTH-01 보안: 역할은 요청 본문에서 받지 않음)
+    # 공통 요청 필드. 간호사·병동 생성 폼은 추가 필드를 거절한다.
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
 class Signup(Body):
     name: Name
     email: EmailStr
-    password: str
+    password: Password
     terms_agreed: bool
 
     @field_validator("password")
@@ -41,26 +53,11 @@ class Signup(Body):
 
 class Login(Body):
     email: NonBlank
-    password: NonBlank
+    password: Password
 
 
 class Withdraw(Body):
-    password: NonBlank
-
-
-class CreateWard(Body):
-    hospital_name: NonBlank
-    ward_name: NonBlank
-    required_staff: dict[str, int] = {"D": 7, "E": 5, "N": 5}  # 수간호사가 규칙(COVERAGE)에서 수정
-    rule_preset: Preset
-
-
-class JoinRequest(Body):
-    join_code: str
-
-
-class ApproveMembership(Body):
-    nurse_id: uuid.UUID | None = None  # 계정을 연결할 기존 간호사 (선택)
+    password: Password
 
 
 class Reason(Body):
@@ -68,15 +65,24 @@ class Reason(Body):
     reason: Annotated[str, StringConstraints(max_length=300)] | None = None
 
 
-class Transfer(Body):
-    target_nurse_id: uuid.UUID
+class NurseFields(Body):
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+    @field_validator("joined_year", check_fields=False)
+    @classmethod
+    def valid_year(cls, value):
+        from app.business.common import today_kst
+        if value is not None and not 1900 <= value <= today_kst().year:
+            raise ValueError("OUT_OF_RANGE")
+        return value
 
 
-class NurseCreate(Body):
+class NurseCreate(NurseFields):
     name: Name
     duty_role: DutyRole
     status: NurseStatus
-    joined_at: date
+    joined_year: StrictInt
+    is_preceptor: StrictBool = False
     career_months: int = Field(ge=0)
     skill_level: int = Field(ge=1, le=5)
     affiliation_start: date
@@ -84,13 +90,14 @@ class NurseCreate(Body):
     preceptor_of: list[uuid.UUID] | None = None
 
 
-class NursePatch(Body):
-    """부분 수정. role 등 정의하지 않은 필드는 400 (권한 변경은 AUTH-07로만)"""
+class NursePatch(NurseFields):
+    """등록과 같은 필드의 부분 수정. role·wardId는 입력할 수 없다."""
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
     name: Name | None = None
     duty_role: DutyRole | None = None
     status: NurseStatus | None = None
-    joined_at: date | None = None
+    joined_year: StrictInt | None = None
+    is_preceptor: StrictBool | None = None
     career_months: int | None = Field(None, ge=0)
     skill_level: int | None = Field(None, ge=1, le=5)
     affiliation_start: date | None = None
@@ -178,34 +185,18 @@ class ImportMappingPatch(Body):
     duty_mappings: list[DutyMapping] | None = None
 
 
-class WorkRequestCreate(Body):
-    type: RequestType
-    target_dates: list[date] = Field(min_length=1)
-    reason_code: str
-    reason_detail: str | None = Field(None, max_length=500)
-    preferred_duty: Duty | None = None
-
-
 class ChargePut(Body):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
     is_charge: StrictBool
     version: StrictInt = Field(ge=1)
 
 
-class OffDeadlinePut(Body):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
-    closes_at: AwareDatetime | None
-    manually_closed: StrictBool = False
-    version: StrictInt = Field(ge=0)
-
-
-class NotificationPatch(Body):
-    read: bool
-
-
-class NotificationSettingsPatch(Body):
-    schedule_confirmed: bool | None = None
-    schedule_cancelled: bool | None = None
-    request_result: bool | None = None
-    duty_reminder: bool | None = None
-    web_push: bool | None = None
+class WorkspaceCreate(NurseFields):
+    hospital_name: NonBlank
+    ward_name: NonBlank
+    head_name: Name
+    joined_year: StrictInt
+    affiliation_start: date
+    career_months: StrictInt = Field(ge=0)
+    required_staff: dict[str, int]
+    rule_preset: Preset = Preset.STANDARD

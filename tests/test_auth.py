@@ -1,100 +1,103 @@
-"""API-AUTH-01~05 + 공통 규약 (오류 형식·CSRF·쿠키)"""
-from conftest import Api, err, user
+"""수간호사 계정 인증과 일반 간호사 읽기 전용 경계."""
+import uuid
 
-from app.business import auth
+import pytest
 
-
-def test_signup_validates_and_ignores_role():
-    a = Api()
-    e = err(a("POST", "/auth/signup", {"name": "x", "email": "weak@x.com", "password": "short", "termsAgreed": True}),
-            400, "VALIDATION_ERROR")
-    assert {"field": "password", "reason": "WEAK_PASSWORD"} in e["fieldErrors"]
-    e = err(a("POST", "/auth/signup", {"name": "x", "email": "t@x.com", "password": "pass1234", "termsAgreed": False}),
-            400, "VALIDATION_ERROR")
-    assert {"field": "termsAgreed", "reason": "TERMS_NOT_AGREED"} in e["fieldErrors"]
-    d = a.data("POST", "/auth/signup", {"name": "김수간", "email": "auth@x.com", "password": "pass1234",
-                                        "termsAgreed": True, "role": "HEAD_NURSE", "wardId": "x"}, status=201)
-    assert set(d) == {"id", "name", "email", "accountStatus"} and d["accountStatus"] == "ACTIVE"
-    err(a("POST", "/auth/signup", {"name": "a", "email": "AUTH@x.com", "password": "pass1234", "termsAgreed": True}),
-        409, "EMAIL_ALREADY_EXISTS")
+from app.business import access
+from app.business.common import ApiException
+from app.main import app
+from app.persistence.db import SessionLocal
+from app.persistence.models import Nurse, User
+from conftest import Api, NURSE, add_nurses, err, user, ward_head
 
 
-def test_signup_logs_in():
-    a = Api()
-    a.data("POST", "/auth/signup", {"name": "가입", "email": "signin@x.com", "password": "pass1234", "termsAgreed": True},
-           status=201)
-    me = a.data("GET", "/me")
-    assert me["user"]["email"] == "signin@x.com" and me["membership"] is None
+@pytest.mark.parametrize("method,path", [
+    ("POST", "/ward-membership-requests"), ("GET", "/wards/me/join-code"),
+    ("POST", "/wards/me/membership/leave"), ("GET", "/me/notifications"),
+    ("POST", f"/wards/me/nurses/{uuid.uuid4()}/invite-code"),
+])
+def test_general_membership_and_invite_routes_are_removed(method, path):
+    err(Api()(method, path, {} if method != "GET" else None), 404, "RESOURCE_NOT_FOUND")
+    assert path not in app.openapi()["paths"]
 
 
-def test_signup_rate_limited_per_client():
-    a = Api()
-    for i in range(auth._signups.max):
-        a.c.cookies.clear()
-        a("POST", "/auth/signup", {"name": "x", "email": f"rl{i}@x.com", "password": "pass1234", "termsAgreed": True})
-    err(a("POST", "/auth/signup", {"name": "x", "email": "rlx@x.com", "password": "pass1234", "termsAgreed": True}),
-        429, "RATE_LIMITED")
+def test_head_uses_own_login_account_for_management():
+    h = ward_head()
+    assert h.c.cookies.get("ACCESS_TOKEN")
+    assert h.data("GET", "/me")["membership"]["role"] == "HEAD_NURSE"
+    assert h.data("POST", "/wards/me/nurses", {**NURSE, "name": "등록"})["name"] == "등록"
+
+    h("POST", "/auth/logout")
+    err(h("GET", "/wards/me"), 401, "UNAUTHENTICATED")
+    h.data("POST", "/auth/login", {"email": h.email, "password": h.password})
+    assert h.data("GET", "/wards/me")["id"] == h.workspace["ward"]["id"]
 
 
-def test_login_sets_cookies_and_me():
-    Api()("POST", "/auth/signup", {"name": "로그인", "email": "login@x.com", "password": "pass1234",
-                                   "termsAgreed": True})
-    a = Api()
-    err(a("GET", "/me"), 401, "UNAUTHENTICATED")
-    err(a("POST", "/auth/login", {"email": "nobody@x.com", "password": "pass1234"}), 401, "INVALID_CREDENTIALS")
-    err(a("POST", "/auth/login", {"email": "login@x.com", "password": "wrong1234"}), 401, "INVALID_CREDENTIALS")
-    r = a("POST", "/auth/login", {"email": "login@x.com", "password": "pass1234"})
-    cookies = r.headers.get_list("set-cookie")
-    assert any(c.startswith("ACCESS_TOKEN=") and "HttpOnly" in c and "SameSite=strict" in c for c in cookies)
-    assert any(c.startswith("REFRESH_TOKEN=") and "Path=/api/v1/auth" in c for c in cookies)
-    assert any(c.startswith("CSRF_TOKEN=") and "HttpOnly" not in c for c in cookies)
-    me = a.data("GET", "/me")
-    assert me["user"]["email"] == "login@x.com" and me["membership"] is None and me["ward"] is None
+def test_account_without_head_role_cannot_use_management_api():
+    h = ward_head()
+    [nurse_id] = add_nurses(h, 1)
+    general = user("일반 간호사")
+    with SessionLocal() as db:
+        nurse = db.get(Nurse, uuid.UUID(nurse_id))
+        nurse.user_id = uuid.UUID(general.account["id"])
+        db.commit()
+    err(general("GET", "/wards/me"), 403, "FORBIDDEN")
+    err(general("POST", "/wards/me/schedules", {"yearMonth": "2028-01"}), 403, "FORBIDDEN")
 
 
-def test_state_change_requires_csrf_header():
-    a = user()
-    err(a("POST", "/auth/logout", headers={"X-CSRF-Token": "nope"}), 403, "CSRF_TOKEN_INVALID")
+def test_unauthenticated_user_cannot_use_management_api():
+    err(Api()("GET", "/wards/me"), 401, "UNAUTHENTICATED")
+    err(Api()("POST", "/workspaces", {}), 401, "UNAUTHENTICATED")
 
 
-def test_csrf_token_is_bound_to_session():
-    """다른 세션의 CSRF 토큰을 쿠키·헤더에 맞춰 넣어도(double submit 우회) 거부된다"""
-    a, b = user(), user()
-    forged = Api(cookies={"ACCESS_TOKEN": a.c.cookies.get("ACCESS_TOKEN"), "CSRF_TOKEN": b.c.cookies.get("CSRF_TOKEN")})
-    err(forged("POST", "/auth/logout"), 403, "CSRF_TOKEN_INVALID")
-    assert a.data("GET", "/me")
+def test_passwords_preserve_whitespace_and_reject_invalid_bcrypt_lengths():
+    client = Api()
+    email = f"{uuid.uuid4()}@example.com"
+    password = " Password123! "
+    client.data("POST", "/auth/signup", {"name": "수간호사", "email": email, "password": password,
+                                           "termsAgreed": True}, status=201)
+    client("POST", "/auth/logout")
+    err(client("POST", "/auth/login", {"email": email, "password": password.strip()}),
+        401, "INVALID_CREDENTIALS")
+    client.data("POST", "/auth/login", {"email": email, "password": password})
+
+    for invalid in ("   ", "가" * 25, "a" * 73):
+        response = Api()("POST", "/auth/login", {"email": email, "password": invalid})
+        err(response, 400, "VALIDATION_ERROR")
 
 
-def test_refresh_rotates_tokens_and_logout_ends_session():
-    a = user()
-    old_access, old_refresh = a.c.cookies.get("ACCESS_TOKEN"), a.c.cookies.get("REFRESH_TOKEN")
-    a.data("POST", "/auth/refresh")
-    assert a.data("GET", "/me")
-    err(Api(cookies={"ACCESS_TOKEN": old_access})("GET", "/me"), 401, "UNAUTHENTICATED")
-    assert a("POST", "/auth/logout").status_code == 204
-    err(a("GET", "/me"), 401, "UNAUTHENTICATED")
+def test_existing_synthetic_head_can_be_associated_with_real_account():
+    h = ward_head()
+    replacement = user("기존 병동 수간호사")
+    ward_id = uuid.UUID(h.workspace["ward"]["id"])
+    head_id = uuid.UUID(h.workspace["headNurseId"])
+    with SessionLocal() as db:
+        head = db.get(Nurse, head_id)
+        synthetic = db.get(User, head.user_id)
+        synthetic.email = f"{uuid.uuid4()}@workspace.invalid"
+        synthetic.password_hash = "!"
+        result = access.associate_head_account(db, ward_id, replacement.email)
+        db.commit()
+    assert result["headNurseId"] == head_id and not result["alreadyLinked"]
+    assert replacement.data("GET", "/wards/me")["id"] == str(ward_id)
+
+    with SessionLocal() as db:
+        fake = User(name="합성", email=f"{uuid.uuid4()}@workspace.invalid", password_hash="!")
+        db.add(fake)
+        db.flush()
+        with pytest.raises(ApiException) as raised:
+            access.associate_head_account(db, ward_id, fake.email)
+        assert raised.value.status == 422 and raised.value.code == "ACCOUNT_NOT_ELIGIBLE"
+        db.rollback()
 
 
-def test_reused_refresh_token_revokes_whole_family():
-    """이미 회전된 리프레시 토큰이 다시 오면(탈취) 최신 세션까지 모두 폐기한다"""
-    a = user()
-    stolen = Api(cookies={k: a.c.cookies.get(k) for k in ("REFRESH_TOKEN", "CSRF_TOKEN")})
-    a.data("POST", "/auth/refresh")
-    err(stolen("POST", "/auth/refresh"), 401, "REFRESH_TOKEN_INVALID")
-    err(a("GET", "/me"), 401, "UNAUTHENTICATED")
-    err(a("POST", "/auth/refresh"), 403, "CSRF_TOKEN_INVALID")  # 세션이 없으니 CSRF도 무효
-
-
-def test_logout_with_expired_access_revokes_refresh():
-    a = user()
-    a.c.cookies.delete("ACCESS_TOKEN")  # 브라우저가 만료된 액세스 쿠키를 버린 상태
-    err(a("GET", "/me"), 401, "UNAUTHENTICATED")
-    refresh = a.c.cookies.get("REFRESH_TOKEN")
-    assert a("POST", "/auth/logout").status_code == 204
-    err(Api(cookies={"REFRESH_TOKEN": refresh, "CSRF_TOKEN": "t"})("POST", "/auth/refresh"), 403, "CSRF_TOKEN_INVALID")
-
-
-def test_unknown_route_uses_error_format():
-    r = Api()("GET", "/nope")
-    err(r, 404, "RESOURCE_NOT_FOUND")
-    assert r.headers["X-Trace-Id"] == r.json()["error"]["traceId"]
+def test_post_idempotency_and_ward_isolation():
+    h, other = ward_head(), ward_head()
+    headers = {"Idempotency-Key": "register-one"}
+    body = {**NURSE, "name": "멱등성"}
+    first = h("POST", "/wards/me/nurses", body, headers=headers)
+    again = h("POST", "/wards/me/nurses", body, headers=headers)
+    assert first.json() == again.json() and again.headers["Idempotent-Replayed"] == "true"
+    err(h("POST", "/wards/me/nurses", {**body, "name": "다름"}, headers=headers),
+        422, "IDEMPOTENCY_KEY_REUSED")
+    err(other("GET", "/wards/me/nurses/" + first.json()["data"]["id"]), 404, "NURSE_NOT_FOUND")

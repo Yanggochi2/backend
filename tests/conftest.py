@@ -51,11 +51,12 @@ def _reset_signup_limit():
 
 
 def user(name="사용자") -> Api:
-    """가입한(= 로그인된) 사용자. 테스트끼리 겹치지 않게 이메일은 매번 새로"""
-    a = Api()
-    a.data("POST", "/auth/signup", {"name": name, "email": f"{uuid.uuid4().hex[:10]}@x.com", "password": "pass1234",
-                                    "termsAgreed": True})
-    return a
+    u = Api()
+    u.password = "Password123!"
+    u.email = f"{uuid.uuid4()}@example.com"
+    u.account = u.data("POST", "/auth/signup", {"name": name, "email": u.email, "password": u.password,
+                                                   "termsAgreed": True}, status=201)
+    return u
 
 
 def err(r, status, code) -> dict:
@@ -66,31 +67,22 @@ def err(r, status, code) -> dict:
     return e
 
 
-def ward_head(d=1, e=1, n=1, preset="STANDARD", day_fixed=False) -> Api:
-    """
-    병동을 개설한 수간호사. 작은 병동에서 수간호사도 교대 근무에 넣어 흐름을 검사하므로
-    평일 D 고정(DAY_FIXED)과 근무별 평균 숙련도(SKILL_MIX, 수간호사 숙련도 기본 1)는 기본으로 끈다
-    (규칙 자체는 test_ward_guidelines에서 검사)
-    """
+def ward_head(d=1, e=1, n=1, preset="STANDARD") -> Api:
     h = user("수간호사")
-    h.data("POST", "/wards", {"hospitalName": "한빛", "wardName": "7병동", "requiredStaff": {"D": d, "E": e, "N": n},
-                              "rulePreset": preset}, status=201)
-    if not day_fixed:
-        for r in h.data("GET", "/wards/me/rules"):
-            if r["code"] in ("DAY_FIXED", "SKILL_MIX"):
-                h.data("PATCH", f"/wards/me/rules/{r['id']}", {"enabled": False})
+    h.workspace = h.data("POST", "/workspaces", {
+        "hospitalName": "한빛", "wardName": "7병동", "headName": "수간호사", "joinedYear": 2000,
+        "careerMonths": 312, "affiliationStart": "2025-01-01",
+        "requiredStaff": {"D": d, "E": e, "N": n}, "rulePreset": preset}, status=201)
     return h
 
 
 def member(h: Api, name="간호사") -> tuple[Api, str]:
-    """h의 병동에 가입 승인된 일반 간호사와 그 간호사 id"""
-    n = user(name)
-    code = h.data("GET", "/wards/me/join-code")["code"]
-    rid = n.data("POST", "/ward-membership-requests", {"joinCode": code})["id"]
-    return n, h.data("POST", f"/wards/me/membership-requests/{rid}/approve")["id"]
+    # 일반 간호사는 계정을 만들지 않는다. 관리자가 프로필만 등록한다.
+    nurse = h.data("POST", "/wards/me/nurses", {**NURSE, "name": name})
+    return Api(), nurse["id"]
 
 
-NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedAt": "2025-01-01", "careerMonths": 12, "skillLevel": 3,
+NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": 2025, "careerMonths": 12, "skillLevel": 3,
          "affiliationStart": "2025-01-01"}
 
 
@@ -103,19 +95,30 @@ def fill_rotation(h: Api, s: dict) -> dict:
     """
     간호사 5명을 D,D,E,E,O,O,N,N,O,O 순환으로 2일씩 밀어 채운다 → 매일 D·E·N 1명씩, 하드 위반 없음.
     같은 근무 2일 유지·야간 후 OFF 2일·주별 연속 휴무도 지켜 소프트 위반이 생기지 않는다 (30일 달 기준 야간 6회).
-    필요 인원 1/1/1 병동에서 자동 생성 없이 확정 가능한 근무표를 만들 때 쓴다.
-    순환은 OFF 12~13일이라 자동 OFF 목표(주말 + 공휴일 + 1)를 쓰는 달이면 목표를 12로 둔다.
-    31일 달은 5명이 나이트 31번을 나눠 1명이 7회가 되므로 월 야간 상한을 7로 둔다
+    필요 인원 1/1/1 병동에서 자동 생성 없이 확정 가능한 근무표를 만들 때 쓴다
     """
-    ym = s["yearMonth"]
-    if h.data("GET", f"/wards/me/off-targets/{ym}")["source"] == "AUTO":
-        h.data("PATCH", f"/wards/me/off-targets/{ym}", {"targetCount": 12, "reason": "순환 근무"})
-    nights = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "MAX_MONTHLY_NIGHTS")
-    h.data("PATCH", f"/wards/me/rules/{nights['id']}", {"parameters": {"max": 7}})
-    s = h.data("GET", f"/wards/me/schedules/{s['id']}")
     pattern = ["D", "D", "E", "E", "O", "O", "N", "N", "O", "O"]
     days = sorted({c["date"] for c in s["cells"]})
-    changes = [{"nurseId": n["id"], "date": d, "dutyCode": pattern[(2 * i + j) % 10]}
+    off = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "OFF_TARGET")
+    h.data("PATCH", f"/wards/me/rules/{off['id']}", {"enabled": False})
+    holidays = set(s["holidays"])
+    from datetime import date
+    changes = [{"nurseId": n["id"], "date": d, "dutyCode":
+                ("O" if date.fromisoformat(d).weekday() >= 5 or d in holidays else "D")
+                if n["role"] == "HEAD_NURSE" else pattern[(2 * (i - 1) + j) % 10]}
                for i, n in enumerate(s["nurses"]) for j, d in enumerate(days)]
     h.data("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": s["version"], "changes": changes})
     return h.data("GET", f"/wards/me/schedules/{s['id']}")
+
+
+def confirm_schedule(h, s):
+    all_violations = []
+    page = 0
+    while True:
+        result = h("GET", f"/wards/me/schedules/{s['id']}/violations?size=100&page={page}").json()
+        all_violations += result["data"]
+        page += 1
+        if page >= result["meta"]["totalPages"]:
+            break
+    return h.data("POST", f"/wards/me/schedules/{s['id']}/confirm",
+                  {"acknowledgedSoftViolationIds": [v["id"] for v in all_violations if v["severity"] == "SOFT"]})

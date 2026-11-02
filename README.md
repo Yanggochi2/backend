@@ -1,117 +1,90 @@
-# 병동 근무표 백엔드
+# 병동 근무표 백엔드 — 10/26 회의 반영
 
-간호사 근무표 자동 생성 서비스 백엔드. FastAPI / Python 3.12 / PostgreSQL. API 명세서 v1.0 기준.
+FastAPI / Python 3.12 / SQLAlchemy / PostgreSQL·SQLite / OR-Tools CP-SAT.
+수간호사는 **자신의 계정으로 로그인해 편집**하고, 일반 간호사는 **공유 링크로 확정본만 조회**한다.
 
-## 빠른 실행 (Docker만 있으면 됨)
+- [작업 계획·가정·검증 결과](docs/client-1026-plan.md)
+- [변경 API와 프론트엔드 연동](docs/client-1026-api.md)
+- 이전 인증·신청 명세는 현재 API에 적용되지 않는다. 실행 서버의 `/docs`가 현재 계약이다.
+
+## 실행
+
 ```bash
-cp .env.example .env             # 설정 파일 (기본값 그대로 써도 됨. 없으면 같은 기본값으로 뜬다)
-docker compose up --build -d     # PostgreSQL + API
-```
-- 설정은 `.env`에서 읽는다: DB 계정(`POSTGRES_*`), `COOKIE_SECURE`, `API_PORT`, `REMINDER_EVERY_SECONDS`. 설명은 [.env.example](.env.example)
-- `.env`는 git에 올리지 않는다(`.gitignore`). **배포 환경에서는 `POSTGRES_PASSWORD`를 바꾸고 HTTPS면 `COOKIE_SECURE=true`**
-- API 문서: http://localhost:8000/docs (Swagger, `API_PORT`를 바꿨으면 그 포트), 기본 경로 `/api/v1`
-- 로그: `docker compose logs -f api` / 중지: `docker compose down` / DB까지 초기화: `docker compose down -v`
-- 데이터는 `pgdata` 볼륨에 남는다. 테이블은 서버 시작 시 자동 생성
-- PostgreSQL 포트는 호스트에 열지 않는다(로컬 5432와 충돌 방지). 직접 접속: `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'`
-
-## 로컬 개발 (uv)
-```bash
-uv sync                                         # 의존성 설치 (brew install uv)
-COOKIE_SECURE=false uv run uvicorn app.main:app --reload   # SQLite 파일(nurs-local.db), http://localhost:8000/docs
-uv run python -m app.seed                        # 데모 데이터 (head@demo.nurs / nurse1~3@demo.nurs, 비밀번호 Demo1234!). 다시 실행해도 안전
+uv sync --frozen
+uv run uvicorn app.main:app --reload
+# 별도 터미널: 독립된 데모 병동 28명 + 이번 달 초안
+DEMO_HEAD_PASSWORD='<실행 시 지정할 비밀번호>' uv run python -m app.seed
 ```
 
-| 환경 변수 | 기본값 | 설명 |
-|---|---|---|
-| `DATABASE_URL` | `sqlite:///./nurs-local.db` | DB 연결 (compose에서는 `.env`의 `POSTGRES_*`로 조립) |
-| `COOKIE_SECURE` | `true` | 쿠키 Secure 속성. http 로컬이면 `false` (compose 기본은 `false`) |
-| `REMINDER_EVERY_SECONDS` | (없음 = 매일 18시 KST) | 근무 전날 리마인드 주기. 테스트용 |
+기본 DB는 `sqlite:///./nurs-local.db`. `DATABASE_URL`로 변경한다.
+데모는 수간호사 1명, 차지 2명, 일반 25명이며 프리셉터는 일반 간호사 중 5~6년차 2명이다.
+seed 출력의 데모 수간호사 이메일과 실행 시 `DEMO_HEAD_PASSWORD`로 지정한 비밀번호로 로그인한다.
+비밀번호는 소스·DB 응답·seed 출력에 원문으로 저장하지 않는다.
+데모 재실행은 인원을 중복 등록하지 않으며 근무표를 자동 확정하지 않는다.
 
-## 테스트
+Docker 실행:
+
 ```bash
-uv run pytest     # 도메인 규칙 단위 테스트 + API 명세서 v1.0 시나리오 (TestClient, 임시 SQLite)
-# PostgreSQL로 검증: 호스트에서 접속 가능한 빈 DB를 TEST_DATABASE_URL로 지정 (compose의 postgres는 포트를 열지 않음)
-TEST_DATABASE_URL=postgresql+psycopg://user:pw@localhost:5432/empty_db uv run pytest
+cp .env.example .env
+docker compose up --build -d
 ```
 
-## 구조 (3-Layered, CLAUDE.md)
-- `app/presentation` 라우트·요청 검증(schemas)·인증 쿠키·CSRF·Idempotency-Key·요청 단위 트랜잭션
-- `app/business` 서비스 (권한·병동 범위 검증, 감사 로그, 알림, 엑셀, 자동 생성 작업)
-- `app/persistence` SQLAlchemy 모델 (모든 식별자 UUID)
-- `app/domain` 순수 규칙: `validator`(SCH-05 위반 검출), `generator`(GEN-01 자동 편성). FastAPI·DB에 의존하지 않는다
+`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `API_PORT`는 `.env.example`을 참고한다.
 
-## API 계약 — 병동 근무표 서비스 API 명세서 v1.0
-기본 경로 `/api/v1`, 59개 엔드포인트. 전체 목록은 서버 실행 후 `/docs`.
+## 현재 기능
 
-- **응답**: 단일 `{"data": {...}}`, 목록 `{"data": [...], "meta": {page, size, totalElements, totalPages}}`, 204는 본문 없음
-- **오류**: `{"error": {code, message, traceId, status, timestamp, fieldErrors?, details?}}`. 응답 헤더 `X-Trace-Id`도 같은 값
-- **인증**: 가입·로그인 시 `ACCESS_TOKEN`(30분)·`REFRESH_TOKEN`(14일, Path=/api/v1/auth)·`CSRF_TOKEN` 쿠키. 토큰은 DB에 해시만 저장. `POST /auth/refresh`는 토큰을 회전하고, 이미 회전된 리프레시 토큰이 다시 오면 그 로그인 계열 세션을 모두 폐기. `POST /auth/logout`은 액세스가 만료돼도 리프레시 쿠키로 동작. 가입은 클라이언트 IP별 시간당 20회 (리버스 프록시 뒤라면 uvicorn `--proxy-headers` 필요)
-- **CSRF**: signup·login을 제외한 POST/PUT/PATCH/DELETE는 `X-CSRF-Token` 헤더에 `CSRF_TOKEN` 쿠키 값을 실어야 하며, 서버는 그 값이 요청 쿠키의 세션이 발급한 것인지 확인
-- **병동 범위**: 경로는 `/wards/me/...`. 다른 병동 리소스·초안 근무표(일반 간호사)는 404, 역할 부족은 403
-- **멱등성**: 모든 POST가 `Idempotency-Key`를 지원 (사용자별, 24시간). 같은 키·같은 요청은 저장된 2xx 응답 + `Idempotent-Replayed: true`, 다른 요청이면 422 `IDEMPOTENCY_KEY_REUSED`
-- **동시성**: 근무표 변경은 `baseVersion` 불일치 시 409 `VERSION_CONFLICT`. 활성 편집 잠금이 있으면 `X-Schedule-Lock-Token`이 없거나 틀릴 때 423 `SCHEDULE_LOCKED`. 잠금이 없으면 baseVersion만으로 충돌을 막는다. 잠금 획득·해제는 근무표 version을 올리지 않는다
+- 수간호사 계정: 회원가입·로그인·세션 갱신·로그아웃을 제공하고 HttpOnly 쿠키와 CSRF 토큰으로 보호한다.
+- 병동 개설: 로그인 후 `POST /api/v1/workspaces`. 해당 계정이 병동의 수간호사가 된다.
+- 관리 API: `/api/v1/wards/me/...`. 로그인한 수간호사만 접근할 수 있다.
+- 일반 간호사 가입·계정 연결·온라인 신청·승인·오프 마감·개인 알림 API는 제공하지 않는다.
+- 공유: 확정/보관된 한 달의 조회 링크 발급·교체·폐기. 링크 교체/폐기/확정 취소 후 이전 링크는 무효.
+- 간호사 등록/수정: `joinedYear`, `affiliationStart`, `careerMonths`, `dutyRole`, `isPreceptor`, `preceptorOf`.
+- 정렬: 기본 `proficiency`(수간호사→차지→일반, 그룹 안 경력 내림차순), `name` 두 개.
+- 근무표 조회 응답: 월간 기본값 `defaultView: month`, 전체 월의 셀.
+- 수동 편집·확정·엑셀·감사 로그·편집 잠금·낙관적 버전 충돌·자동 생성.
 
-## 명세서 v1.0 이후 추가된 API
-명세서 개정 시 반영 필요.
+## 생성 규칙
 
-| Method | Path | 권한 | 설명 |
-|---|---|---|---|
-| POST | /wards/me/nurses/{nurseId}/invite-code | HEAD_NURSE | 계정 없이 등록한 간호사에게 개인 초대 코드(10자, 7일, 1회용) 발급. 재발급 시 이전 코드 무효. 연결된 간호사 409 `NURSE_ALREADY_LINKED` |
-| DELETE | /wards/me/nurses/{nurseId}/invite-code | HEAD_NURSE | 발급한 초대 코드 취소. 유효한 코드가 없으면 404 `INVITE_CODE_NOT_FOUND` |
-| POST | /wards/me/membership/leave | 병동 구성원 | 병동 탈퇴 (204). 마지막 수간호사 409 `LAST_HEAD_NURSE` |
-| DELETE | /me | 인증 사용자 | 계정 탈퇴 (204). 본문 `{password}` 재확인, 틀리면 401. 소속이 있으면 병동 탈퇴를 먼저 수행 |
-| DELETE | /ward-membership-requests/me | 로그인 | 대기 중인 내 가입 신청 취소. 없으면 404 `REQUEST_NOT_FOUND` |
-| POST | /wards/me/nurses/{nurseId}/unlink-account | HEAD_NURSE | 잘못 연결된 계정 해제 `{reason}`. 행은 재직 유지, 대기 신청 취소, 새 초대 코드 발급 가능 |
+- 일반 간호사 월 **O = 주말 날짜 ∪ 등록된 공휴일 날짜의 수 + 1**. 인력이 남는다는 이유로 O를 늘리지 않는다.
+- 수간호사·차지: 평일 D, 주말/공휴일 O. 고정 AL/ED는 보존. 주5일 기준이므로 별도 추가 O를 강제하지 않는다.
+- 프리셉터는 직급이 아니다. `isPreceptor`와 `preceptorOf`로 관리하며 정렬상 상위 직급으로 취급하지 않는다.
+- D/E/N 최소 인원을 충족하고 E/N 초과를 줄인다. E와 N은 각각 공정성 목적함수로 분배하며 고정 세트로 묶지 않는다.
+- 연속 근무·야간·역순환·이전 달 말 근무·임신·신입 야간 지원 제약을 유지한다.
+- AL(연차), ED(교육·학회), 요청한 고정 셀은 재생성해도 유지한다. AL/ED는 O 목표에 포함하지 않는다.
+- 해를 못 찾거나 하드 위반이 남으면 `NO_SOLUTION`, 충돌 내역과 부분 결과를 반환하며 저장된 근무표는 바꾸지 않는다.
+- 생성은 요청 내 동기 실행(기본 30초, 최대 60초). 202는 작업 접수 상태가 아니라 완료된 작업 결과다. 중단은 완료 후 `JOB_ALREADY_FINISHED`.
+- 최적화를 시간 내 완료하지 못하면 해 품질이나 공정성 최적값은 보장하지 않는다. 성공 판정 전 동일 검증기로 하드 규칙을 재확인한다.
 
-- `POST /ward-membership-requests`의 `joinCode`에 **개인 초대 코드**를 넣으면 승인 없이 그 간호사 행에 계정이 연결된다 (응답 `status: APPROVED`, `via: INVITE_CODE`). 병동 공용 코드(8자)는 지금처럼 승인 대기. 만료 코드 422 `INVITE_CODE_EXPIRED`
-- 간호사 응답에 `inviteExpiresAt`(수간호사만, 발급된 코드가 있을 때)
-- 초대 코드로 가입하면 수간호사 전원에게 `MEMBER_JOINED` 알림 (계정 이름이 다르면 확인 요청)
-- 승인 시 `nurseId` 연결: 유효한 초대 코드가 나간 행은 후보(`candidates`)에서 빠지고, 연결하면 409 `INVITE_CODE_OUTSTANDING`
-- 가입·초대 전체 흐름과 규칙: [docs/membership.md](docs/membership.md)
-- **탈퇴해도 간호사 행은 지우지 않는다.** 퇴사(`RETIRED`, 소속 종료일=오늘) + 계정 연결 해제 → 목록·이후 근무표에서 빠지고 지난 근무표·감사 로그는 보존
-  - 대기 중인 신청과 종료일 이후 날짜의 승인 신청은 취소(초안의 AL도 제거), 초안 근무표의 종료일 이후 셀은 삭제(version 증가)
-  - 확정된 근무표는 바꾸지 않고 수간호사에게 `MEMBER_LEFT` 알림 (확정 취소 후 수정)
-  - 계정 탈퇴는 이메일·이름·비밀번호를 익명화하고 세션·알림을 삭제. 같은 이메일로 재가입 가능
+공휴일은 기존 양력 기본 목록과 병동 보정값을 사용한다. **설·추석·대체·임시공휴일은 병동 보정 API로 입력해야 한다.**
+최소 인원/정확한 정원, 수간호사의 필요 인원 포함 여부, 중도 소속의 O 비례 계산 등은 [확인 목록](docs/client-1026-plan.md)에 기록했다.
 
-## 🔶 결정 필요 항목에 대한 현재 구현
+## 기존 DB 전환
 
-| API | 선택한 동작 |
-|---|---|
-| AUTH-03 세션 갱신 | 리프레시 토큰 회전. 쓴 토큰은 즉시 폐기 |
-| WARD-01 병동 개설 | requiredStaff D/E/N 각 0 이상·합계 1 이상, 아니면 422 `INVALID_STAFFING`. 가입 대기 중이면 409 |
-| WARD-03 가입 신청 | 코드 대소문자 무시, 계정당 시간당 10회. 신청 상태는 `GET /me`의 `membershipRequest`로 조회 |
-| WARD-08 가입 코드 재발급 | 읽은 코드가 그대로일 때만 바꾼다. 다른 수간호사가 먼저 재발급했으면 409 `ROTATION_IN_PROGRESS` (덮어쓰지 않음) |
-| WARD-05 가입 승인 | 본문 없음이 기본. 선택적으로 `{nurseId}`를 주면 계정 없는 기존 간호사 행에 연결 |
-| RULE-06·07 OFF 목표 | 근무표가 있는 달만 (없으면 404 `TARGET_NOT_FOUND`). 자동값 = 공휴일 수 + 1, `targetCount: null`이면 자동으로 복귀 |
-| RULE-05 공휴일 | 매년 같은 날짜의 공휴일만 기본 제공. 설·추석·대체공휴일은 병동이 보정 |
-| SCH-05 커버리지 | 날짜×D/E/N, 미배정·소속 기간 밖 제외. status UNDER/MET/OVER |
-| SCH-08 확정 취소 | 사유 필수, ARCHIVED는 409 |
-| SCH-10 엑셀 가져오기 | 미리보기를 DB에 저장(202). 동명이인·미등록 행은 `nurseMappings`로 지정(null=건너뜀), 모르는 코드는 `dutyMappings`로 지정. AL·소속 기간 밖 셀은 가져오지 않음 |
-| SCH-13·15 편집 잠금 | 30분 무활동 만료. 강제 인수는 사유 필수 + 기존 보유자 알림 + 감사 로그 |
-| GEN-01·02 자동 생성 | 그리디 생성기가 즉시 끝나므로 요청 안에서 실행하고 끝난 작업을 202로 반환. 성공이면 근무표에 바로 반영, 하드 위반이 남으면 `NO_SOLUTION` + 충돌·완화안·부분 해(근무표는 그대로) |
-| GEN-04 완화안 | 해당 HARD 규칙을 병동 설정에서 SOFT로 낮춘 뒤(감사 로그) 같은 조건으로 재실행. 법적 보호 규칙(임신 중 N, 소속 기간)은 불가 |
-| REQ-01 신청 | 사유 코드 `PERSONAL/FAMILY/HEALTH/STUDY/ETC`(ETC는 상세 필수). 희망 오프는 1인 월 4일까지 |
-| NOTI-01·04 알림 | 앱 내 알림함. `webPush: true`는 422 `PUSH_NOT_SUPPORTED` |
+서버 시작 시 공유 테이블을 만들고 `is_preceptor` 컬럼을 추가한다. 기존 입사일 원본·근무표·계정/신청 이력은 삭제하지 않는다. PRECEPTOR를 GENERAL + is_preceptor로 전환한다.
 
-## 규칙 (RULE-01)
-병동별 규칙 행: `COVERAGE`(parameters `{D,E,N}` = 필요 인원), `MAX_CONSECUTIVE_NIGHTS`·`MAX_CONSECUTIVE_WORK`(`{max}`), `NIGHT_TO_DAY`, `CHARGE_DAY_ONLY`, `PREGNANT_NIGHT`🔒, `NEW_NIGHT_ALONE`, `OUT_OF_AFFILIATION`🔒 (기본 HARD) / `OFF_TARGET`, `WISH_OFF_IGNORED`, `WISH_DUTY_IGNORED`, `PRECEPTOR_MISMATCH` (기본 SOFT). 🔒는 끄거나 SOFT로 낮출 수 없음. 꺼진 규칙은 위반에서 빠지고, 자동 생성은 켜진 HARD 규칙만 강제한다.
+기존 병동의 회의 규칙 전환은 운영자가 명시적으로 실행한다:
 
-## 엑셀 양식
-근무표: 첫 행 = `이름`, `1`~`31`(또는 `1일`) / 첫 열 = 간호사 이름. 내보낸 파일을 그대로 다시 가져올 수 있음
+```bash
+uv run python -m app.manage apply-client-rules <병동_UUID>
+```
 
-## 미구현 / 가정
-- 미구현: 소셜 로그인, 웹 푸시(#27), 비동기 생성 작업 큐(#25). 테이블은 시작 시 자동 생성 — 운영 전 Alembic 도입(#24). **스키마가 바뀌었으므로 기존 `nurs-local.db`는 지우고 다시 띄울 것**
-- 🔶 가정: 단일 병동 소속, 간호사 중복 판정 = 같은 이름 + 같은 입사일
-- 역할(role) 변경은 권한 부여·이관(AUTH-07)으로만 가능 — 간호사 수정 API에 role을 보내면 400
+명령은 차지/고연차/월 O/평일 근무 관련 설정만 새 기본값으로 전환한다. 기존 확정 근무표는 바꾸지 않는다. 과거 수동 `offTarget` 값도 보존하므로 자동 기준으로 돌아가려면 해당 월 `targetCount: null`을 적용한다.
+예전 편집 링크 방식으로 만들어진 병동은 실제 수간호사 계정을 먼저 가입시킨 후 다음 명령으로 연결한다:
 
-## 구조 (3-Layered)
-- `app/presentation` 라우트·요청 검증·인증 쿠키·요청 단위 트랜잭션
-- `app/business` 서비스 (권한·병동 범위 검증, 감사 로그, 알림)
-- `app/persistence` SQLAlchemy 모델
-- `app/domain` 순수 규칙. FastAPI·DB에 의존하지 않는다
+```bash
+uv run python -m app.manage link-head-account <병동_UUID> <수간호사_계정_이메일>
+```
 
-## 규칙·공휴일·간호사·차지·오프 마감
+활성 상태의 실제 로그인 계정이면서 다른 재직 소속이 없어야 하고, 병동에는 교체 가능한 기존 수간호사 행이 정확히 한 명이어야 한다. 런타임 관리 API의 수간호사 권한 검사는 이 명령으로 우회할 수 없다.
+공유 토큰은 DB에 해시만 저장하며 링크 발급 응답을 멱등성 캐시에 남기지 않는다.
 
-[API 계약과 규칙 엔진 구조](docs/management-api.md)를 참고하세요.
-규칙 카탈로그의 파라미터를 생성기·검증기가 함께 사용하며, 월별 희망 오프 접수 마감과
-차지 지정·해제를 별도 API로 관리합니다. 변경 요청은 인증 쿠키와 CSRF 헤더가 필요합니다.
+## 검증
+
+```bash
+uv run pytest -q
+```
+
+28명 자동 편성·등록→생성→확정→공유 통합 흐름, 권한 분리/병동 격리, 링크 폐기, O 계산, 고정 셀, 월 경계, 데이터 전환, 기존 엑셀/잠금/버전 검사를 포함한다.
+일반 간호사 가입/신청/알림 테스트는 폐지 API의 404 검사와 수간호사 계정·공유 계약 검사로 대체했다.
+
+기존 프론트엔드 main은 쿠키 로그인과 `joinedAt`을 사용한다. 이 백엔드 변경과 함께 새 API에 연동해야 한다. 이 작업에서는 프론트엔드 소스를 수정하지 않았다.

@@ -5,22 +5,25 @@ GEN-01 대체 생성기 (CP-SAT이 시간 안에 해를 못 찾을 때). 날짜 
 휴직(ON_LEAVE) 간호사는 배정하지 않는다(O).
 """
 from app.domain.model import Cells, Duty, DutyRole, NurseStatus, Roster
-from app.domain.rule_engine import can_assign, fill_day_fixed
-from app.domain.validator import coverage, off_target
+from app.domain.rule_engine import can_assign
+from app.domain.validator import coverage
 
 
 def generate(r: Roster) -> Cells:
-    r = fill_day_fixed(r)
     cells: Cells = {n.id: dict(r.cells.get(n.id, {})) for n in r.nurses}
     cur = r.with_cells(cells)
     days = r.days()
     worked = {n.id: sum(1 for duty in cells[n.id].values() if duty.is_work) for n in r.nurses}
     work_goal = {
-        n.id: max(0, sum(n.affiliated(d) for d in days) - off_target(r, n))
+        n.id: max(0, sum(n.affiliated(d) for d in days) - r.off_target)
         for n in r.nurses
     }
 
-    for i, d in enumerate(days):
+    for d in r.days():
+        for n in r.nurses:
+            if n.affiliated(d) and n.weekday_only and n.status != NurseStatus.ON_LEAVE and d not in cells[n.id]:
+                cells[n.id][d] = Duty.O if d.weekday() >= 5 or d in r.holidays else Duty.D
+                worked[n.id] += cells[n.id][d].is_work
         for duty in (Duty.N, Duty.E, Duty.D):
             need = r.rules.required(duty) - coverage(cur, d).get(duty, 0)
             candidates = [n for n in r.nurses
@@ -34,11 +37,8 @@ def generate(r: Roster) -> Cells:
                 worked[n.id],                                     # 근무 적은 사람 우선
             ))
             for n in candidates:
-                # 필요 인원은 최소. 다 채운 뒤에도 근무 목표보다 덜 일한 사람은 D에 더 넣는다 (OFF가 목표보다 늘지 않게)
-                behind = (duty == Duty.D and worked[n.id] < work_goal[n.id] * (i + 1) / len(days)
-                          and d not in r.wish_offs.get(n.id, set()))
-                if need <= 0 and not behind:
-                    continue
+                if need <= 0:
+                    break
                 if not can_assign(cur, n, duty, d):
                     continue
                 cells[n.id][d] = duty
