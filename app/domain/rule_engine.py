@@ -38,13 +38,21 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
         if count > limit:
             add(code, f"연속 근무 {count}일 (최대 {limit})")
     one = timedelta(days=1)
-    p1, p2, p3 = (r.cell(n.id, d - k * one) for k in (1, 2, 3))
+    k = rules.parameter("NIGHT_REST", "nights")
+    p = [r.cell(n.id, d - i * one) for i in range(1, max(k, 3) + 2)]  # p[0] = 전날
+    p1, p2, p3 = p[0], p[1], p[2]
     if (p1, Duty.D if x == Duty.ED else x) in REVERSE:
         add("NIGHT_TO_DAY", f"역순환 {p1}→{x} (근무 사이 휴식 11시간 미만)")
-    # 야간 2일 이상 연속 후 48시간(OFF 2일) 휴식
-    if x is not None and x.is_work and ((x != Duty.N and p1 == Duty.N and p2 == Duty.N)
-                                        or (p1 != Duty.N and p2 == Duty.N and p3 == Duty.N)):
-        add("NIGHT_REST", "야간 2일 연속 후 OFF 2일 필요")
+    # 야간 k일(기본 3) 연속 후 48시간(OFF 2일) 휴식. 지난달 말 나이트와 이어서 센다
+    if x is not None and x.is_work and ((x != Duty.N and all(v == Duty.N for v in p[:k]))
+                                        or (p1 != Duty.N and all(v == Duty.N for v in p[1:k + 1]))):
+        add("NIGHT_REST", f"야간 {k}일 연속 후 OFF 2일 필요")
+    # 퐁당퐁당: 매일 다른 근무(D E N) 또는 근무·휴무 4일 교대(W O W O)
+    if x is not None and p1 is not None and p2 is not None:
+        if x.is_work and p1.is_work and p2.is_work and p2 != p1 != x:
+            add("PING_PONG", f"매일 다른 근무 {p2}→{p1}→{x}")
+        if p3 is not None and p3.is_work != p2.is_work != p1.is_work != x.is_work:
+            add("PING_PONG", f"근무·휴무 교대 {p3} {p2} {p1} {x}")
     if n.duty_role == DutyRole.NIGHT_ONLY and x in (Duty.D, Duty.E):
         add("NIGHT_ONLY_SHIFT", "나이트 전담은 N만 배정 가능")
     if n.duty_role == DutyRole.NEW and x == Duty.N:

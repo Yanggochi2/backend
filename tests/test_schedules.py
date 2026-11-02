@@ -1,5 +1,7 @@
 """API-SCH-01~08 근무표 생성·조회·편집·확정"""
-from conftest import NURSE, YM, NEXT, add_nurses, err, fill_rotation, member, ward_head
+from datetime import timedelta
+
+from conftest import NURSE, YM, NEXT, add_nurses, confirm_schedule, err, fill_rotation, member, ward_head
 
 
 def _ward_with_schedule(extra=5):
@@ -70,3 +72,22 @@ def test_violations_and_confirm():
     err(h("POST", f"/wards/me/schedules/{s['id']}/confirm", {}), 409, "INVALID_SCHEDULE_STATE")
     err(h("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": c["version"], "changes": [
         {"nurseId": s["nurses"][0]["id"], "date": NEXT.isoformat(), "dutyCode": "O"}]}), 409, "INVALID_SCHEDULE_STATE")
+
+
+def test_unused_offs_of_confirmed_month_carry_over():
+    h, s = _ward_with_schedule()
+    s = fill_rotation(h, s)
+    # 목표를 높여 O를 다 못 쓰게 한다 → 확정 후 남은 O가 다음 달 목표에 더해진다 (수간호사는 평일 D 고정이라 제외)
+    h.data("PATCH", f"/wards/me/off-targets/{YM}", {"targetCount": 20, "reason": "이월 확인"})
+    s = h.data("GET", f"/wards/me/schedules/{s['id']}")
+    shift = {n["id"] for n in s["nurses"] if n["role"] != "HEAD_NURSE"}
+    left = {x["nurseId"]: 20 - x["O"] for x in s["statistics"] if x["nurseId"] in shift}
+    confirm_schedule(h, s)
+    after = (NEXT + timedelta(days=32)).strftime("%Y-%m")
+    nxt = h.data("POST", "/wards/me/schedules", {"yearMonth": after}, status=201)
+    base = h.data("GET", f"/wards/me/off-targets/{after}")["targetCount"]
+    for x in nxt["statistics"]:
+        if x["nurseId"] in shift:
+            assert x["offCarry"] == left[x["nurseId"]] > 0 and x["offTarget"] == min(31, base + x["offCarry"])
+        else:
+            assert x["offCarry"] == 0

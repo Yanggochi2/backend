@@ -369,9 +369,12 @@ def roster(db: Session, s: Schedule) -> Roster:
     nurses = sorted_nurses(nurses)
     # 연속 야간·근무를 월 경계 너머로 세기 위해 이전 달 근무표를 함께 넘긴다
     prev = by_month(db, s.ward_id, (first - timedelta(days=1)).replace(day=1))
+    # 확정된 지난달에 다 못 쓴 O는 이번 달 목표에 더한다 (지난달 이월분까지 포함해 누적)
+    # ponytail: 이월분을 저장하지 않고 확정된 달을 거슬러 올라가며 매번 계산. 느려지면 확정 시 이월분을 저장
+    carry = validator.unused_offs(roster(db, prev)) if prev and prev.status in VISIBLE_TO_NURSES else {}
     return Roster(first, [n.info() for n in nurses], _cells(db, s.id), rules.load(db, s.ward_id),
                   _off_target(db, s), {}, {}, _cells(db, prev.id) if prev else {},
-                  frozenset(rules.holiday_dates(db, s.ward_id, first)))
+                  frozenset(rules.holiday_dates(db, s.ward_id, first)), carry)
 
 
 def view(db: Session, s: Schedule, m: Member, sort: str | None = None) -> dict:
@@ -480,6 +483,7 @@ def _stat(r: Roster, nurse_id, holidays: set[date]) -> dict:
         if x.is_work and d in holidays:
             holiday += 1
     return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": validator.off_target(r, next(n for n in r.nurses if n.id == nurse_id)),
+            "offCarry": r.off_carry.get(nurse_id, 0),
             "weekendWork": weekend, "holidayWork": holiday}
 
 

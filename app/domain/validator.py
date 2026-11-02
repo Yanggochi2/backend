@@ -49,7 +49,11 @@ def validate(r: Roster) -> list[Violation]:
             out.append(Violation(SOFT, "MAX_MONTHLY_NIGHTS", n.id, None, None, f"월 야간 {nights}회 (최대 {limit})"))
         out.extend(_weekly_rest(r, n, days))
 
+    goal = rules.parameter("SKILL_MIX", "target")
     for d in days:
+        for duty, avg in skill_mix(r, d).items():
+            if abs(avg - goal) > SKILL_TOLERANCE:
+                out.append(Violation(SOFT, "SKILL_MIX", None, d, duty, f"{duty} 평균 숙련도 {avg:.1f} (목표 {goal})"))
         count = coverage(r, d)
         for duty in (Duty.D, Duty.E, Duty.N):
             need, have = rules.required(duty), count.get(duty, 0)
@@ -81,9 +85,36 @@ def off_target(r: Roster, n) -> int:
     if n.weekday_only:
         return sum(d.weekday() >= 5 or d in r.holidays for d in days)
     target = (r.off_target * len(days) + len(r.days()) // 2) // len(r.days())
+    # 확정된 지난달에 다 못 쓴 O는 이번 달 목표에 더한다 (소속 일수를 넘지 않게)
+    target = min(len(days), target + r.off_carry.get(n.id, 0))
     if n.duty_role == DutyRole.NIGHT_ONLY and r.off_target > 0:
         target = max(target, len(days) - NIGHT_ONLY_MAX_NIGHTS)
     return target
+
+
+def unused_offs(r: Roster) -> dict:
+    """그 달에 O 목표보다 덜 쉰 만큼 (다음 달로 이월). 교대 근무 간호사만, 초과 사용은 깎지 않는다"""
+    out = {}
+    for n in r.nurses:
+        if n.weekday_only or n.status == NurseStatus.ON_LEAVE or r.off_target <= 0:
+            continue
+        left = off_target(r, n) - sum(1 for d in r.days() if n.affiliated(d) and r.cell(n.id, d) == Duty.O)
+        if left > 0:
+            out[n.id] = left
+    return out
+
+
+SKILL_TOLERANCE = 0.5  # 근무별 평균 숙련도가 목표에서 이만큼 넘게 벗어나면 SKILL_MIX 위반
+
+
+def skill_mix(r: Roster, d: date) -> dict[Duty, float]:
+    """듀티별 평균 숙련도. 평일 D 고정(수간호사·차지)은 교대 구성이 아니라 뺀다"""
+    by: dict[Duty, list[int]] = {}
+    for n in r.nurses:
+        x = r.cell(n.id, d)
+        if x is not None and x.is_work and n.affiliated(d) and not n.weekday_only:
+            by.setdefault(x, []).append(n.skill_level)
+    return {x: sum(v) / len(v) for x, v in by.items()}
 
 
 def has_role(r: Roster, roles) -> bool:

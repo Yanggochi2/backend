@@ -17,7 +17,8 @@ CATALOG = {
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
     "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", "HARD"),
-    "NIGHT_REST": RuleDef("야간 2일 연속 후 OFF 2일", "HARD"),
+    "NIGHT_REST": RuleDef("야간 연속 후 OFF 2일", "HARD", params={"nights": 3}),
+    "PING_PONG": RuleDef("퐁당퐁당 금지 (근무·휴무 교대, 매일 다른 근무)", "HARD"),
     # 10/26: 차지는 평일 D, 주말·공휴일 O. 근무마다 차지 배치는 기본 해제.
     "WEEKDAY_DAY_ONLY": RuleDef("수간호사·차지 평일 D, 주말·공휴일 O", "HARD", locked=True),
     "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D"]}),
@@ -37,6 +38,7 @@ CATALOG = {
     "ISOLATED_SHIFT": RuleDef("고립된 근무·휴무 피하기", "SOFT"),
     "WEEKLY_REST": RuleDef("주마다 연속 휴무 2일", "SOFT"),
     "SHIFT_BLOCK": RuleDef("같은 근무 2일 이상 이어서", "SOFT"),
+    "SKILL_MIX": RuleDef("근무별 평균 숙련도", "SOFT", params={"target": 3}),
 }
 MINIMAL_OFF = {"MAX_CONSECUTIVE_NIGHTS", "MAX_CONSECUTIVE_WORK", "NIGHT_TO_DAY", "NIGHT_REST"}
 
@@ -50,9 +52,11 @@ def parameters(code: str, supplied: dict) -> dict:
     if code == "COVERAGE":
         if set(supplied) != {"D", "E", "N"} or any(type(v) is not int or v < 0 for v in values.values()) or not sum(values.values()):
             raise ValueError("D/E/N은 각각 0 이상 정수, 합계 1 이상이어야 합니다")
-    for key in ("max", "minExperienced"):
+    for key in ("max", "minExperienced", "nights"):
         if key in values and (type(values[key]) is not int or not 1 <= values[key] <= 31):
             raise ValueError(f"{key}는 1~31 정수여야 합니다")
+    if "target" in values and (type(values["target"]) is not int or not 1 <= values["target"] <= 5):
+        raise ValueError("target은 1~5 정수여야 합니다")
     if "maxDeviation" in values and (type(values["maxDeviation"]) is not int or not 0 <= values["maxDeviation"] <= 31):
         raise ValueError("maxDeviation은 0~31 정수여야 합니다")
     if "allowedDuties" in values:

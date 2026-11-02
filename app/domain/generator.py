@@ -14,7 +14,7 @@ from ortools.sat.python import cp_model
 
 from app.domain import greedy
 from app.domain.model import NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Cells, Duty, DutyRole, NurseStatus, Roster, Severity
-from app.domain.validator import has_role, off_target
+from app.domain.validator import SKILL_TOLERANCE, has_role, off_target
 
 SHIFTS = (Duty.D, Duty.E, Duty.N, Duty.O)
 COVERAGE_WEIGHT = 10_000
@@ -23,7 +23,8 @@ SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
 # OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
 WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
            "WISH_DUTY_IGNORED": 20, "WEEKLY_REST": 15, "ISOLATED_SHIFT": 10, "SHIFT_BLOCK": 5,
-           "PRECEPTOR_MISMATCH": 5}
+           "PRECEPTOR_MISMATCH": 5, "SKILL_MIX": 5}
+SKILL_OUT_WEIGHT = 100  # 근무 평균 숙련도가 허용 범위를 벗어난 정도
 FAIRNESS_WEIGHT = 10
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
@@ -203,12 +204,29 @@ class _Model:
         for i in range(len(t) - k):
             self.forbid([self.lit(n, d, WORK) for d in t[i:i + k + 1]], w)
         w = self.weight("NIGHT_REST")
-        for i in range(1, len(t) - 1):
-            nn = [self.lit(n, t[i - 1], Duty.N), self.lit(n, t[i], Duty.N)]
+        k = rules.parameter("NIGHT_REST", "nights")
+        for i in range(k - 1, len(t) - 1):
+            nn = [self.lit(n, d, Duty.N) for d in t[i - k + 1:i + 1]]
             for x in (Duty.D, Duty.E, Duty.ED):
                 self.forbid(nn + [self.lit(n, t[i + 1], x)], w)
             if i + 2 < len(t):
                 self.forbid(nn + [_neg(self.lit(n, t[i + 1], Duty.N)), self.lit(n, t[i + 2], WORK)], w)
+        w = self.weight("PING_PONG")
+        if w is not SKIP:
+            for i in range(2, len(t)):
+                if not all(self.known(n, d) for d in t[i - 2:i + 1]):
+                    continue
+                # 매일 다른 근무 (D E N 등)
+                for a in (Duty.D, Duty.E, Duty.N):
+                    for b in (Duty.D, Duty.E, Duty.N):
+                        for c in (Duty.D, Duty.E, Duty.N):
+                            if a != b != c:
+                                self.forbid([self.lit(n, t[i - 2], a), self.lit(n, t[i - 1], b),
+                                             self.lit(n, t[i], c)], w)
+                # 근무·휴무 4일 교대 (W R W R, R W R W)
+                if i >= 3 and self.known(n, t[i - 3]):
+                    for kinds in ((WORK, REST, WORK, REST), (REST, WORK, REST, WORK)):
+                        self.forbid([self.lit(n, d, x) for d, x in zip(t[i - 3:i + 1], kinds)], w)
         for d in self.days:
             if n.weekday_only and n.status != NurseStatus.ON_LEAVE and (n.id, d) in self.free:
                 expected = Duty.O if d.weekday() >= 5 or d in self.r.holidays else Duty.D
@@ -302,6 +320,7 @@ class _Model:
         w = self.weight("COVERAGE", COVERAGE_WEIGHT)
         w_new = self.weight("NEW_NIGHT_ALONE", NEW_ALONE_WEIGHT)
         needs = {"CHARGE_EVERY_SHIFT": has_role(r, {DutyRole.CHARGE}), "SENIOR_EVERY_SHIFT": has_role(r, SENIOR_ROLES)}
+        w_skill = self.weight("SKILL_MIX")
         for d in self.days:
             on = [n for n in r.nurses if n.affiliated(d)]
             for x in (Duty.D, Duty.E, Duty.N):
@@ -311,6 +330,18 @@ class _Model:
                 self.at_least(assigned, need, w)
                 if w is not SKIP:
                     self.at_most(assigned, need, 100 if x in (Duty.E, Duty.N) else 1, len(on))
+                if w_skill is not SKIP and need > 0:
+                    # 평균 숙련도를 목표에 가깝게: |Σ(숙련도 - 목표)| 감점, 허용 범위(±SKILL_TOLERANCE)를 벗어나면 크게
+                    goal = r.rules.parameter("SKILL_MIX", "target")
+                    shift = [n for n in on if not n.weekday_only]  # 검증기와 같이 평일 D 고정은 뺀다
+                    gap = sum(self.lit(n, d, x) * (n.skill_level - goal) for n in shift)
+                    dev = self.m.NewIntVar(0, 5 * len(on), "")
+                    self.m.Add(dev >= gap)
+                    self.m.Add(dev >= -gap)
+                    self.cost.append((w_skill, dev))
+                    out = self.m.NewIntVar(0, 50 * len(on), "")
+                    self.m.Add(out >= 10 * dev - int(10 * SKILL_TOLERANCE) * sum(self.lit(n, d, x) * 1 for n in shift))
+                    self.cost.append((SKILL_OUT_WEIGHT, out))
             for code, roles in (("CHARGE_EVERY_SHIFT", {DutyRole.CHARGE}), ("SENIOR_EVERY_SHIFT", SENIOR_ROLES)):
                 if not needs[code]:
                     continue
