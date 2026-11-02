@@ -13,7 +13,7 @@ class RuleDef:
 
 
 CATALOG = {
-    "COVERAGE": RuleDef("듀티별 정확한 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
+    "COVERAGE": RuleDef("듀티별 최소 인원", "HARD", params={"D": 0, "E": 0, "N": 0}),
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
     "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", "HARD"),

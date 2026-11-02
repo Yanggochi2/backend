@@ -102,7 +102,8 @@ def test_holiday_override_reset_changes_off_target_and_is_scoped():
     n, _ = member(h)
     h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
     initial = h.data("GET", f"/wards/me/off-targets/{YM}")["targetCount"]
-    day = NEXT.replace(day=20).isoformat()  # 기본 공휴일과 겹치지 않는다
+    # 주말·기본 공휴일이 아닌 평일 (주말은 이미 OFF 목표에 들어 있다)
+    day = next(NEXT.replace(day=i) for i in range(16, 23) if NEXT.replace(day=i).weekday() < 5).isoformat()
     h.data("PUT", f"/wards/me/holidays/{day}", {"isHoliday": True, "name": "병원 휴일"})
     assert h.data("GET", f"/wards/me/off-targets/{YM}")["targetCount"] == initial + 1
     err(n("DELETE", f"/wards/me/holidays/{day}"), 403, "FORBIDDEN")

@@ -20,7 +20,7 @@ def generate(r: Roster) -> Cells:
         for n in r.nurses
     }
 
-    for d in r.days():
+    for i, d in enumerate(days):
         for duty in (Duty.N, Duty.E, Duty.D):
             need = r.rules.required(duty) - coverage(cur, d).get(duty, 0)
             candidates = [n for n in r.nurses
@@ -34,8 +34,11 @@ def generate(r: Roster) -> Cells:
                 worked[n.id],                                     # 근무 적은 사람 우선
             ))
             for n in candidates:
-                if need <= 0:
-                    break
+                # 필요 인원은 최소. 다 채운 뒤에도 근무 목표보다 덜 일한 사람은 D에 더 넣는다 (OFF가 목표보다 늘지 않게)
+                behind = (duty == Duty.D and worked[n.id] < work_goal[n.id] * (i + 1) / len(days)
+                          and d not in r.wish_offs.get(n.id, set()))
+                if need <= 0 and not behind:
+                    continue
                 if not can_assign(cur, n, duty, d):
                     continue
                 cells[n.id][d] = duty

@@ -38,7 +38,7 @@ def validate(r: Roster) -> list[Violation]:
         tolerance = rules.parameter("OFF_TARGET", "maxDeviation")
         target = off_target(r, n)
         if (n.affiliated(days[0]) and n.affiliated(days[-1]) and not r.day_fixed(n)
-                and abs(offs - target) > tolerance):
+                and n.status != NurseStatus.ON_LEAVE and abs(offs - target) > tolerance):
             direction = "과다" if offs > target else "부족"
             out.append(Violation(
                 SOFT, "OFF_TARGET", n.id, None, None,
@@ -53,13 +53,10 @@ def validate(r: Roster) -> list[Violation]:
     for d in days:
         count = coverage(r, d)
         for duty in (Duty.D, Duty.E, Duty.N):
+            # 필요 인원은 최소 인원. 남는 인력이 더 들어가는 것은 위반이 아니다
             need, have = rules.required(duty), count.get(duty, 0)
-            if have != need:
-                direction = "부족" if have < need else "초과"
-                out.append(Violation(
-                    HARD, "COVERAGE", None, d, duty,
-                    f"{duty} 인원 {direction}: 필요 {need}명 / 배정 {have}명",
-                ))
+            if have < need:
+                out.append(Violation(HARD, "COVERAGE", None, d, duty, f"{duty} 인원 부족: 필요 {need}명 / 배정 {have}명"))
         for duty, avg in skill_mix(r, d).items():
             goal = rules.parameter("SKILL_MIX", "target")
             if abs(avg - goal) > SKILL_TOLERANCE:
@@ -96,7 +93,8 @@ def unused_offs(r: Roster) -> dict:
     days = r.days()
     out = {}
     for n in r.nurses:
-        if r.off_target <= 0 or r.day_fixed(n) or not (n.affiliated(days[0]) and n.affiliated(days[-1])):
+        if (r.off_target <= 0 or r.day_fixed(n) or n.status == NurseStatus.ON_LEAVE
+                or not (n.affiliated(days[0]) and n.affiliated(days[-1]))):
             continue
         left = off_target(r, n) - sum(1 for d in days if r.cell(n.id, d) in OFFISH)
         if left > 0:

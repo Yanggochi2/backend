@@ -2,7 +2,7 @@
 GEN-01. OR-Tools CP-SAT으로 근무표를 편성한다. 규칙 기준: docs/superpowers/specs/2026-10-26-cp-sat-generator-design.md
 - 입력 셀(연차 AL, GEN-05 고정 셀)은 그대로 두고 빈 칸만 채운다. 휴직자는 O, 소속 기간 밖은 칸이 없다
 - HARD로 켜진 규칙은 제약으로, SOFT 규칙과 SOFT로 낮춘 하드 규칙은 감점으로 최적화한다
-- 인원 충족(COVERAGE)·신입 단독 야간 금지는 아주 큰 감점으로 둔다. 인원이 부족한 달에도 결과를 내고,
+- 최소 인원(COVERAGE)·신입 단독 야간 금지는 아주 큰 감점으로 둔다. 인원이 부족한 달에도 결과를 내고,
   남은 하드 위반은 검증기가 잡아 해 없음(GEN-04) 흐름으로 간다
 - 고정 칸끼리만으로 이미 어긋나는 구간(지난달 말과 이어지는 구간 등)은 제약에서 뺀다. 그 위반은 검증기가 보고한다
 """
@@ -22,12 +22,14 @@ COVERAGE_WEIGHT = 10_000
 NEW_ALONE_WEIGHT = 20_000  # 신입 혼자 야간보다 인원 부족으로 남기는 편이 낫다
 SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
 # OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
-WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
+# 승인된 희망 오프는 OFF 개수와 같은 1단계 수준으로 지킨다
+WEIGHTS = {"WISH_OFF_IGNORED": SOFTENED_WEIGHT, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
            "WISH_DUTY_IGNORED": 20, "WEEKLY_REST": 15, "ISOLATED_SHIFT": 10, "SHIFT_BLOCK": 5,
            "PRECEPTOR_MISMATCH": 5, "SKILL_MIX": 5}
 FAIRNESS_WEIGHT = 10
 SKILL_OUT_WEIGHT = 100  # 근무 평균 숙련도가 허용 범위를 벗어난 정도
-# 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
+# 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 초과 1명당 감점
+OVER_WEIGHTS = {Duty.D: 1, Duty.E: 4, Duty.N: COVERAGE_WEIGHT}
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
 LOOKBACK_DAYS = 7  # 지난달 말 근무를 이어서 볼 일수 (연속 근무 최대 5일 + 여유)
@@ -70,7 +72,7 @@ NIGHT_ROTATION = (Duty.N, Duty.N, Duty.N, Duty.O, Duty.O)
 
 
 def _rotation_hint(r: Roster) -> Cells:
-    """간호사마다 시작점을 엇갈린 순환 패턴. 나이트 전담은 N N N O O, 임신 중이면 N 자리를 D로"""
+    """간호사마다 시작점을 엇갈린 순환 패턴. 나이트 전담은 N N N O O, 임신 중이면 N 자리를 D로, 희망 오프 날은 O"""
     out: Cells = {}
     for k, n in enumerate(r.nurses):
         cycle = NIGHT_ROTATION if n.duty_role == DutyRole.NIGHT_ONLY else ROTATION
@@ -80,7 +82,7 @@ def _rotation_hint(r: Roster) -> Cells:
             if x == Duty.N and (n.status == NurseStatus.PREGNANT or n.duty_role == DutyRole.CHARGE
                                 and x not in r.rules.parameter("CHARGE_DAY_ONLY", "allowedDuties")):
                 x = Duty.D
-            row[d] = x
+            row[d] = Duty.O if d in r.wish_offs.get(n.id, set()) else x
         out[n.id] = row
     return out
 
@@ -240,7 +242,8 @@ class _Model:
             limit = (NIGHT_ONLY_MAX_NIGHTS if n.duty_role == DutyRole.NIGHT_ONLY
                      else self.rules.parameter("MAX_MONTHLY_NIGHTS", "max"))
             self.at_most(self.count(n, days, Duty.N), limit, w, len(days))
-        if n.affiliated(days[0]) and n.affiliated(days[-1]) and r.off_target > 0 and not r.day_fixed(n):
+        if (n.affiliated(days[0]) and n.affiliated(days[-1]) and r.off_target > 0 and not r.day_fixed(n)
+                and n.status != NurseStatus.ON_LEAVE):
             # OFF는 목표 ± 허용 편차 안으로 (벗어나면 하드 수준 감점), 안에서도 목표에 가깝게
             rest = self.count(n, days, REST)
             w = self.weight("OFF_TARGET")
@@ -307,12 +310,12 @@ class _Model:
             present = [n for n in r.nurses if n.affiliated(d)]
             on = [n for n in present if not r.day_fixed(n)]  # 평일 D 고정은 인원에 세지 않는다
             for x in (Duty.D, Duty.E, Duty.N):
-                # 필요 인원과 정확히 같게 (부족·초과 모두 하드 위반, 인원 부족 달 대비 큰 감점)
+                # 필요 인원은 최소 (부족은 하드 위반, 인원 부족 달 대비 큰 감점). 남는 인력은 D, 그다음 E로
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)
                 need = r.rules.required(x)
                 self.at_least(assigned, need, w)
                 if w is not SKIP:
-                    self.at_most(assigned, need, w, len(on))
+                    self.at_most(assigned, need, OVER_WEIGHTS[x], len(on))
                 if w_skill is not SKIP and need > 0:
                     # 평균 숙련도를 목표에 가깝게: |Σ(숙련도 - 목표)| 감점
                     goal = r.rules.parameter("SKILL_MIX", "target")
@@ -323,7 +326,7 @@ class _Model:
                     self.cost.append((w_skill, dev))
                     # 평균이 허용 범위(±SKILL_TOLERANCE)를 벗어나면 크게 감점. 인원은 need로 맞춰지므로 need 기준
                     out = self.m.NewIntVar(0, 50 * len(on), "")
-                    self.m.Add(out >= 10 * dev - int(10 * SKILL_TOLERANCE) * need)
+                    self.m.Add(out >= 10 * dev - int(10 * SKILL_TOLERANCE) * assigned)
                     self.cost.append((SKILL_OUT_WEIGHT, out))
             for code, roles in (("CHARGE_EVERY_SHIFT", {DutyRole.CHARGE}), ("SENIOR_EVERY_SHIFT", SENIOR_ROLES)):
                 if not needs[code]:

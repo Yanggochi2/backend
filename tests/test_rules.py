@@ -30,7 +30,7 @@ def test_detects_hard_violations():
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님. 3번의 N N D는 역순환 (야간 휴식은 3일 연속부터)
     assert ids(validate(Roster(OCT, ns, cells, rules, 0))) == {
-        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "COVERAGE", "DAY_FIXED"}
+        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "DAY_FIXED"}
     alone = Roster(OCT, [ns[1]], {2: {START: Duty.N}}, rules, 0)
     assert "NEW_NIGHT_ALONE" in ids(validate(alone))
 
@@ -63,13 +63,13 @@ def test_generator_keeps_fixed_cells_and_counts_them_toward_coverage():
     assert sum(1 for n in ns if cells[n.id].get(START) == Duty.N) == 2, "고정 셀 포함 필요 인원만큼만 배정"
 
 
-def test_coverage_requires_exact_headcount_and_reports_overstaffing():
-    rules = Rules.preset(Preset.STANDARD, 1, 0, 0)
+def test_coverage_is_a_minimum_headcount():
+    rules = Rules.preset(Preset.STANDARD, 1, 1, 0)
     ns = [nurse(1), nurse(2)]
+    # D 2명(필요 1명)은 남는 인력이라 위반이 아니고, E 0명(필요 1명)은 부족
     roster = Roster(OCT, ns, {1: {START: Duty.D}, 2: {START: Duty.D}}, rules, 15)
-    violation = next(v for v in validate(roster) if v.rule_id == "COVERAGE" and v.date == START)
-    assert violation.severity == Severity.HARD
-    assert "초과" in violation.message
+    vs = [v for v in validate(roster) if v.rule_id == "COVERAGE" and v.date == START]
+    assert [(v.current, v.severity) for v in vs] == [(Duty.E, Severity.HARD)] and "부족" in vs[0].message
 
 
 def test_off_target_detects_both_excess_and_shortage():

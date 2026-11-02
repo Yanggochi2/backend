@@ -103,8 +103,16 @@ def fill_rotation(h: Api, s: dict) -> dict:
     """
     간호사 5명을 D,D,E,E,O,O,N,N,O,O 순환으로 2일씩 밀어 채운다 → 매일 D·E·N 1명씩, 하드 위반 없음.
     같은 근무 2일 유지·야간 후 OFF 2일·주별 연속 휴무도 지켜 소프트 위반이 생기지 않는다 (30일 달 기준 야간 6회).
-    필요 인원 1/1/1 병동에서 자동 생성 없이 확정 가능한 근무표를 만들 때 쓴다
+    필요 인원 1/1/1 병동에서 자동 생성 없이 확정 가능한 근무표를 만들 때 쓴다.
+    순환은 OFF 12~13일이라 자동 OFF 목표(주말 + 공휴일 + 1)를 쓰는 달이면 목표를 12로 둔다.
+    31일 달은 5명이 나이트 31번을 나눠 1명이 7회가 되므로 월 야간 상한을 7로 둔다
     """
+    ym = s["yearMonth"]
+    if h.data("GET", f"/wards/me/off-targets/{ym}")["source"] == "AUTO":
+        h.data("PATCH", f"/wards/me/off-targets/{ym}", {"targetCount": 12, "reason": "순환 근무"})
+    nights = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "MAX_MONTHLY_NIGHTS")
+    h.data("PATCH", f"/wards/me/rules/{nights['id']}", {"parameters": {"max": 7}})
+    s = h.data("GET", f"/wards/me/schedules/{s['id']}")
     pattern = ["D", "D", "E", "E", "O", "O", "N", "N", "O", "O"]
     days = sorted({c["date"] for c in s["cells"]})
     changes = [{"nurseId": n["id"], "date": d, "dutyCode": pattern[(2 * i + j) % 10]}

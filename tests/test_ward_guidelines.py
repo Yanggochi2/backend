@@ -51,7 +51,8 @@ def test_full_ward_has_no_hard_violation(generated):
     out, vs = generated
     assert ids(vs, Severity.HARD) == set(), [v for v in vs if v.severity == Severity.HARD][:5]
     for d in DAYS:
-        assert coverage(out, d).get(D) == 7 and coverage(out, d).get(E) == 5 and coverage(out, d).get(N) == 5
+        c = coverage(out, d)
+        assert c.get(D, 0) >= 7 and c.get(E, 0) >= 5 and c.get(N) == 5, "필요 인원은 최소, 남는 인력은 D·E에 (N은 정확히)"
 
 
 def test_head_and_charge_work_weekday_days_outside_coverage(generated):

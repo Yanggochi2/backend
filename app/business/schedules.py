@@ -12,7 +12,7 @@ from app.business.common import (ApiException, bad_request, conflict, iso, month
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
 from app.domain import validator
-from app.domain.model import (Cells, Duty, DutyRole, NotificationType, NurseStatus, RequestStatus, RequestType, Role,
+from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType,
                               Roster, ScheduleStatus, Severity, Violation)
 from app.persistence.db import now
 from app.persistence.models import Assignment, Nurse, Schedule, User, WorkRequest
@@ -511,34 +511,21 @@ def _off_target_view(db: Session, s: Schedule) -> dict:
 
 
 def _off_target(db: Session, s: Schedule) -> int:
-    """필요 근무 슬롯과 소속 인원 일수로 달성 가능한 평균 OFF 목표를 계산한다."""
+    """병동 OFF 목표. 수간호사가 정한 값이 있으면 그 값, 없으면 주말 + 공휴일 + 1"""
     if s.off_target is not None:
         return s.off_target
     return _automatic_off_target(db, s)
 
 
 def _automatic_off_target(db: Session, s: Schedule) -> int:
+    """
+    주말(토·일) + 평일 공휴일 + 1(보건휴가). 인원이 남는 달에도 OFF를 늘리지 않는다:
+    필요 인원은 최소 인원이라 남는 인력은 근무(D 우선)에 더 들어간다
+    """
     first = parse_month(s.year_month)
-    last = month_end(first)
-    month_days = (last - first).days + 1
-    nurses = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == s.ward_id))
-              if n.affiliation_start <= last and (n.affiliation_end is None or n.affiliation_end >= first)]
-    # 평일 D 고정(수간호사·차지)은 듀티별 인원 밖이라 근무 슬롯을 나눠 갖지 않는다
-    if rules.load(db, s.ward_id).enabled("DAY_FIXED"):
-        nurses = [n for n in nurses if n.role != Role.HEAD_NURSE and n.duty_role != DutyRole.CHARGE]
-    if not nurses:
-        return 0
-    available_days = sum(
-        (min(n.affiliation_end or last, last) - max(n.affiliation_start, first)).days + 1
-        for n in nurses
-    )
-    required_work = month_days * sum(rules.staffing(db, s.ward_id).values())
-    available_off = max(0, available_days - required_work)
-    staffing_target = (available_off + len(nurses) // 2) // len(nurses)
-    # 최솟값 = 주말(토·일) + 평일 공휴일 + 1(보건휴가). 주 5일제라 토·일은 쉬는 날로 센다
+    month_days = (month_end(first) - first).days + 1
     weekends = {first + timedelta(days=i) for i in range(month_days) if (first + timedelta(days=i)).weekday() >= 5}
-    holiday_target = len(weekends | rules.holiday_dates(db, s.ward_id, first)) + 1
-    return min(month_days, max(holiday_target, staffing_target))
+    return min(month_days, len(weekends | rules.holiday_dates(db, s.ward_id, first)) + 1)
 
 
 def release_locks(db: Session, ward_id: uuid.UUID, user_id: uuid.UUID) -> None:
