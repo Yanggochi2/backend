@@ -181,6 +181,7 @@ class NurseInfo:
     role: Role = Role.NURSE
     career_months: int = 0
     is_preceptor: bool = False
+    skill_level: int = 3  # 숙련도 1~5 (SKILL_MIX)
 
     @property
     def weekday_only(self) -> bool:
@@ -210,6 +211,7 @@ class Roster:
     wish_duties: Cells = field(default_factory=dict)
     before: Cells = field(default_factory=dict)
     holidays: frozenset[date] = frozenset()
+    off_carry: dict[object, int] = field(default_factory=dict)  # 간호사 id -> 확정된 지난달에 못 쓰고 이월된 O 수
 
     def days(self) -> list[date]:
         n = calendar.monthrange(self.month.year, self.month.month)[1]

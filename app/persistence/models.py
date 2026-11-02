@@ -123,7 +123,8 @@ class Nurse(Base):
     def info(self) -> NurseInfo:
         return NurseInfo(self.id, self.name, self.duty_role, self.status, self.affiliation_start,
                          self.affiliation_end, frozenset(uuid.UUID(x) for x in self.preceptor_of or []),
-                         self.role, self.career_months, self.is_preceptor or self.duty_role == DutyRole.PRECEPTOR)
+                         self.role, self.career_months, self.is_preceptor or self.duty_role == DutyRole.PRECEPTOR,
+                         self.skill_level)
 
 
 class Holiday(Base):
