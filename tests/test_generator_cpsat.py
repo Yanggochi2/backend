@@ -50,8 +50,9 @@ def test_small_ward_keeps_every_hard_rule():
     for n in ns:
         xs = seq(out, n.id)
         assert all((a, b) not in REVERSE for a, b in zip(xs, xs[1:])), f"{n.id} 역순환"
-        for i in range(1, len(xs) - 2):
-            if xs[i - 1] == xs[i] == Duty.N and xs[i + 1] != Duty.N:
+        # 야간 3일 연속 뒤 이틀은 쉰다 (근무표 작성 유의사항 10/27)
+        for i in range(2, len(xs) - 2):
+            if xs[i - 2] == xs[i - 1] == xs[i] == Duty.N and xs[i + 1] != Duty.N:
                 assert not xs[i + 1].is_work and not xs[i + 2].is_work, f"{n.id} 야간 후 휴식"
     assert all(x == Duty.D for x in seq(out, 1) if x.is_work), "차지는 D만"
     assert Duty.N not in seq(out, 2), "임신 중 야간 없음"

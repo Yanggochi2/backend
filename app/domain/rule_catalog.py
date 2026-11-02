@@ -17,7 +17,7 @@ CATALOG = {
     "MAX_CONSECUTIVE_NIGHTS": RuleDef("연속 야간 최대 일수", "HARD", params={"max": 3}),
     "MAX_CONSECUTIVE_WORK": RuleDef("연속 근무 최대 일수", "HARD", params={"max": 5}),
     "NIGHT_TO_DAY": RuleDef("역순환 금지 (E→D, N→D, N→E)", "HARD"),
-    "NIGHT_REST": RuleDef("야간 2일 연속 후 OFF 2일", "HARD"),
+    "NIGHT_REST": RuleDef("야간 3일 연속 후 OFF 2일", "HARD"),
     # 10/26: 차지는 평일 D, 주말·공휴일 O. 근무마다 차지 배치는 기본 해제.
     "WEEKDAY_DAY_ONLY": RuleDef("수간호사·차지 평일 D, 주말·공휴일 O", "HARD", locked=True),
     "CHARGE_DAY_ONLY": RuleDef("차지 허용 근무", "HARD", params={"allowedDuties": ["D"]}),

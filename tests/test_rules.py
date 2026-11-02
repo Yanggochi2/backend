@@ -27,12 +27,27 @@ def test_detects_hard_violations():
     rules.settings["MAX_CONSECUTIVE_WORK"] = replace(rules.settings["MAX_CONSECUTIVE_WORK"], parameters={"max": 31})
     rules.settings["CHARGE_DAY_ONLY"] = replace(rules.settings["CHARGE_DAY_ONLY"], parameters={"allowedDuties": ["D"]})
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
-    cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
-    # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님. 3번의 N N D는 역순환이면서 야간 후 휴식 부족
+    cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.N, day(3): Duty.D}}
+    # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님. 3번의 N N N D는 역순환이면서 야간 3일 후 휴식 부족
     assert ids(validate(Roster(OCT, ns, cells, rules, 0))) == {
         "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "NIGHT_REST", "WEEKDAY_DAY_ONLY"}
     alone = Roster(OCT, [ns[1]], {2: {START: Duty.N}}, rules, 0)
     assert "NEW_NIGHT_ALONE" in ids(validate(alone))
+
+
+def test_night_rest_applies_after_three_consecutive_nights():
+    """근무표 작성 유의사항(10/27): 나이트를 3번 하면 오프 2개. 2번 뒤에는 휴식 규칙을 적용하지 않는다."""
+    rules = isolated_rules(Preset.STANDARD, 0, 0, 0)
+
+    def night_rest(pattern):
+        cells = {1: {day(i): x for i, x in enumerate(pattern) if x is not None}}
+        return "NIGHT_REST" in ids(validate(Roster(OCT, [nurse(1)], cells, rules, 0)))
+
+    N, O, D = Duty.N, Duty.O, Duty.D
+    assert not night_rest([N, N, O, D]), "야간 2일 뒤 하루 쉬고 근무는 허용"
+    assert night_rest([N, N, N, D]), "야간 3일 바로 다음 날 근무"
+    assert night_rest([N, N, N, O, D]), "야간 3일 뒤 하루만 쉬고 근무"
+    assert not night_rest([N, N, N, O, O, D]), "야간 3일 뒤 이틀 쉬면 허용"
 
 
 def test_generator_satisfies_hard_rules_when_staff_is_enough():

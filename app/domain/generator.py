@@ -203,8 +203,9 @@ class _Model:
         for i in range(len(t) - k):
             self.forbid([self.lit(n, d, WORK) for d in t[i:i + k + 1]], w)
         w = self.weight("NIGHT_REST")
-        for i in range(1, len(t) - 1):
-            nn = [self.lit(n, t[i - 1], Duty.N), self.lit(n, t[i], Duty.N)]
+        # 야간 3일 연속(t[i-2..i]) 뒤 이틀은 쉰다
+        for i in range(2, len(t) - 1):
+            nn = [self.lit(n, t[i - 2], Duty.N), self.lit(n, t[i - 1], Duty.N), self.lit(n, t[i], Duty.N)]
             for x in (Duty.D, Duty.E, Duty.ED):
                 self.forbid(nn + [self.lit(n, t[i + 1], x)], w)
             if i + 2 < len(t):

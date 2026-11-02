@@ -38,13 +38,13 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
         if count > limit:
             add(code, f"연속 근무 {count}일 (최대 {limit})")
     one = timedelta(days=1)
-    p1, p2, p3 = (r.cell(n.id, d - k * one) for k in (1, 2, 3))
+    p1, p2, p3, p4 = (r.cell(n.id, d - k * one) for k in (1, 2, 3, 4))
     if (p1, Duty.D if x == Duty.ED else x) in REVERSE:
         add("NIGHT_TO_DAY", f"역순환 {p1}→{x} (근무 사이 휴식 11시간 미만)")
-    # 야간 2일 이상 연속 후 48시간(OFF 2일) 휴식
-    if x is not None and x.is_work and ((x != Duty.N and p1 == Duty.N and p2 == Duty.N)
-                                        or (p1 != Duty.N and p2 == Duty.N and p3 == Duty.N)):
-        add("NIGHT_REST", "야간 2일 연속 후 OFF 2일 필요")
+    # 야간 3일 연속 후 OFF 2일 휴식 (근무표 작성 유의사항 10/27: 나이트 3번 후 오프 2개)
+    if x is not None and x.is_work and ((x != Duty.N and p1 == p2 == p3 == Duty.N)
+                                        or (p1 != Duty.N and p2 == p3 == p4 == Duty.N)):
+        add("NIGHT_REST", "야간 3일 연속 후 OFF 2일 필요")
     if n.duty_role == DutyRole.NIGHT_ONLY and x in (Duty.D, Duty.E):
         add("NIGHT_ONLY_SHIFT", "나이트 전담은 N만 배정 가능")
     if n.duty_role == DutyRole.NEW and x == Duty.N:
