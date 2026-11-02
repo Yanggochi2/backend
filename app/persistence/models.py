@@ -290,18 +290,6 @@ class OffRequestDeadline(Base):
     __mapper_args__ = {"version_id_col": version}
 
 
-class WardAccess(Base):
-    """로그인 없는 편집 권한. 비밀 토큰 원문을 저장하지 않는다."""
-    __tablename__ = "ward_access"
-    id: Mapped[PK]
-    ward_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("wards.id"), unique=True)
-    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
-    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
-    created_at: Mapped[datetime] = mapped_column(default=now)
-    version: Mapped[int] = mapped_column(default=1)
-    __mapper_args__ = {"version_id_col": version}
-
-
 class ScheduleShare(Base):
     """확정본 조회 전용 링크. 교체·폐기 후 이전 토큰은 즉시 무효."""
     __tablename__ = "schedule_shares"

@@ -1,19 +1,20 @@
 """
-API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 편집 링크가 지정한 병동이 대상이다.
+API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 로그인한 수간호사의 병동이 대상이다.
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query, Response, UploadFile
+from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
 
-from app.business import (access, audit, excel, generations, nurses, rules, sharing,
+from app.business import (access, audit, auth, excel, generations, nurses, rules, sharing,
                           schedules, wards)
 from app.business.common import ApiException, parse_month
 from app.domain.model import DutyRole, NurseStatus, Role, Severity
 from app.presentation import schemas as s
-from app.presentation.deps import DB, PREFIX, Page, TxRoute, UserId
+from app.presentation.deps import (ACCESS, REFRESH, AccountId, DB, PREFIX, Page, TxRoute, UserId,
+                                   clear_auth_cookies, set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
 MAX_UPLOAD = 10 * 1024 * 1024  # 🔶 권장 10MB
@@ -33,6 +34,45 @@ def _upload(file: UploadFile) -> bytes:
 
 def _utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None) if dt and dt.tzinfo else dt
+
+
+# --- 수간호사 계정 인증
+@api.post("/auth/signup", status_code=201)
+def signup(body: s.Signup, db: DB, request: Request, response: Response):
+    user, tokens = auth.signup(db, body.name, body.email, body.password, request.client.host if request.client else "")
+    set_auth_cookies(response, tokens)
+    return _d(user)
+
+
+@api.post("/auth/login")
+def login(body: s.Login, db: DB, response: Response):
+    user, tokens = auth.login(db, body.email, body.password)
+    set_auth_cookies(response, tokens)
+    return _d(user)
+
+
+@api.post("/auth/refresh")
+def refresh(request: Request, db: DB, response: Response):
+    user, tokens = auth.refresh(db, request.cookies.get(REFRESH))
+    set_auth_cookies(response, tokens)
+    return _d(user)
+
+
+@api.post("/auth/logout", status_code=204)
+def logout(db: DB, request: Request, response: Response):
+    auth.logout(db, request.cookies.get(ACCESS), request.cookies.get(REFRESH))
+    clear_auth_cookies(response)
+
+
+@api.get("/me")
+def me(account_id: AccountId, db: DB):
+    return _d(auth.me(db, account_id))
+
+
+@api.delete("/me", status_code=204)
+def withdraw(body: s.Withdraw, account_id: AccountId, db: DB, response: Response):
+    auth.withdraw(db, account_id, body.password)
+    clear_auth_cookies(response)
 
 
 # --- 병동
@@ -250,13 +290,8 @@ def audit_logs(user_id: UserId, db: DB, p: Page, frm: datetime | None = Query(No
 
 
 @api.post("/workspaces", status_code=201)
-def create_workspace(body: s.WorkspaceCreate, db: DB):
-    return _d(access.create(db, body.model_dump()))
-
-
-@api.post("/wards/me/management-link")
-def rotate_management_link(user_id: UserId, db: DB):
-    return _d(access.rotate(db, user_id))
+def create_workspace(body: s.WorkspaceCreate, account_id: AccountId, db: DB):
+    return _d(access.create(db, account_id, body.model_dump()))
 
 
 @api.post("/wards/me/schedules/{schedule_id}/share-link", status_code=201)

@@ -4,7 +4,7 @@ from sqlalchemy import select
 
 from conftest import Api, YM, add_nurses, confirm_schedule, err, fill_rotation, ward_head
 from app.persistence.db import SessionLocal
-from app.persistence.models import ScheduleShare, WardAccess
+from app.persistence.models import ScheduleShare
 
 
 def confirmed():
@@ -27,16 +27,15 @@ def test_share_is_read_only_and_minimizes_personal_data():
     assert not any(c['editable'] for c in data['cells'])
     assert 'statistics' not in data and 'readiness' not in data and 'lock' not in data
     public.c.headers['Authorization'] = 'Bearer ' + link['shareToken']
-    err(public('GET', '/wards/me/nurses'), 401, 'MANAGEMENT_LINK_REQUIRED')
-    err(public('POST', '/wards/me/schedules', {'yearMonth': '2028-01'}), 401, 'MANAGEMENT_LINK_REQUIRED')
+    err(public('GET', '/wards/me/nurses'), 401, 'UNAUTHENTICATED')
+    err(public('POST', '/wards/me/schedules', {'yearMonth': '2028-01'}), 401, 'UNAUTHENTICATED')
     assert public('PATCH', f"/shared/schedules/{link['shareToken']}", {}).status_code == 405
     by_name = public.data('GET', f"/shared/schedules/{link['shareToken']}?sort=name")
     assert [n['name'] for n in by_name['nurses']] == sorted(n['name'] for n in by_name['nurses'])
     with SessionLocal() as db:
         share = db.scalar(select(ScheduleShare).where(ScheduleShare.schedule_id == uuid.UUID(s['id'])))
-        grant = db.scalar(select(WardAccess).where(WardAccess.ward_id == uuid.UUID(h.workspace['ward']['id'])))
-        assert len(share.token_hash) == len(grant.token_hash) == 64
-        assert share.token_hash != link['shareToken'] and grant.token_hash != h.workspace['managementToken']
+        assert len(share.token_hash) == 64
+        assert share.token_hash != link['shareToken']
 
 
 def test_share_rotation_revocation_and_other_ward():

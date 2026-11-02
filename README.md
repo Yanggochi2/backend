@@ -1,7 +1,7 @@
 # 병동 근무표 백엔드 — 10/26 회의 반영
 
 FastAPI / Python 3.12 / SQLAlchemy / PostgreSQL·SQLite / OR-Tools CP-SAT.
-로그인 없이 **편집 전용 비밀 링크**로 수간호사가 관리하고, 일반 간호사는 **공유 링크로 확정본만 조회**한다.
+수간호사는 **자신의 계정으로 로그인해 편집**하고, 일반 간호사는 **공유 링크로 확정본만 조회**한다.
 
 - [작업 계획·가정·검증 결과](docs/client-1026-plan.md)
 - [변경 API와 프론트엔드 연동](docs/client-1026-api.md)
@@ -13,13 +13,14 @@ FastAPI / Python 3.12 / SQLAlchemy / PostgreSQL·SQLite / OR-Tools CP-SAT.
 uv sync --frozen
 uv run uvicorn app.main:app --reload
 # 별도 터미널: 독립된 데모 병동 28명 + 이번 달 초안
-uv run python -m app.seed
+DEMO_HEAD_PASSWORD='<실행 시 지정할 비밀번호>' uv run python -m app.seed
 ```
 
 기본 DB는 `sqlite:///./nurs-local.db`. `DATABASE_URL`로 변경한다.
 데모는 수간호사 1명, 차지 2명, 일반 25명이며 프리셉터는 일반 간호사 중 5~6년차 2명이다.
-seed 출력의 `managementToken`을 `Authorization: Bearer <token>`으로 사용한다.
-데모 재실행은 인원을 중복 등록하지 않으며 관리 링크를 교체한다. 근무표를 자동 확정하지 않는다.
+seed 출력의 데모 수간호사 이메일과 실행 시 `DEMO_HEAD_PASSWORD`로 지정한 비밀번호로 로그인한다.
+비밀번호는 소스·DB 응답·seed 출력에 원문으로 저장하지 않는다.
+데모 재실행은 인원을 중복 등록하지 않으며 근무표를 자동 확정하지 않는다.
 
 Docker 실행:
 
@@ -32,9 +33,10 @@ docker compose up --build -d
 
 ## 현재 기능
 
-- 로그인·가입·계정 초대·온라인 신청·승인·오프 마감·개인 알림 API 제거.
-- 병동 개설: `POST /api/v1/workspaces`. 이름/입사 연도/소속 시작일로 수간호사 등록 후 관리 토큰 1회 반환.
-- 관리 API: `/api/v1/wards/me/...`. 헤더의 편집 토큰이 병동을 결정한다. 쿠키 인증을 사용하지 않는다.
+- 수간호사 계정: 회원가입·로그인·세션 갱신·로그아웃을 제공하고 HttpOnly 쿠키와 CSRF 토큰으로 보호한다.
+- 병동 개설: 로그인 후 `POST /api/v1/workspaces`. 해당 계정이 병동의 수간호사가 된다.
+- 관리 API: `/api/v1/wards/me/...`. 로그인한 수간호사만 접근할 수 있다.
+- 일반 간호사 가입·계정 연결·온라인 신청·승인·오프 마감·개인 알림 API는 제공하지 않는다.
 - 공유: 확정/보관된 한 달의 조회 링크 발급·교체·폐기. 링크 교체/폐기/확정 취소 후 이전 링크는 무효.
 - 간호사 등록/수정: `joinedYear`, `affiliationStart`, `careerMonths`, `dutyRole`, `isPreceptor`, `preceptorOf`.
 - 정렬: 기본 `proficiency`(수간호사→차지→일반, 그룹 안 경력 내림차순), `name` 두 개.
@@ -58,17 +60,23 @@ docker compose up --build -d
 
 ## 기존 DB 전환
 
-서버 시작 시 새 접근권한/공유 테이블을 만들고 `is_preceptor` 컬럼을 추가한다. 기존 입사일 원본·근무표·계정/신청 이력은 삭제하지 않는다. PRECEPTOR를 GENERAL + is_preceptor로 전환한다.
+서버 시작 시 공유 테이블을 만들고 `is_preceptor` 컬럼을 추가한다. 기존 입사일 원본·근무표·계정/신청 이력은 삭제하지 않는다. PRECEPTOR를 GENERAL + is_preceptor로 전환한다.
 
-기존 병동의 관리 링크 발급 및 회의 규칙 전환은 운영자가 명시적으로 실행한다:
+기존 병동의 회의 규칙 전환은 운영자가 명시적으로 실행한다:
 
 ```bash
-uv run python -m app.manage issue-link <병동_UUID>
 uv run python -m app.manage apply-client-rules <병동_UUID>
 ```
 
-두 번째 명령은 차지/고연차/월 O/평일 근무 관련 설정만 새 기본값으로 전환한다. 기존 확정 근무표는 바꾸지 않는다. 과거 수동 `offTarget` 값도 보존하므로 자동 기준으로 돌아가려면 해당 월 `targetCount: null`을 적용한다.
-토큰은 재발급할 때만 원문을 반환한다. DB에는 해시만 저장하며 링크 발급 응답을 멱등성 캐시에 남기지 않는다.
+명령은 차지/고연차/월 O/평일 근무 관련 설정만 새 기본값으로 전환한다. 기존 확정 근무표는 바꾸지 않는다. 과거 수동 `offTarget` 값도 보존하므로 자동 기준으로 돌아가려면 해당 월 `targetCount: null`을 적용한다.
+예전 편집 링크 방식으로 만들어진 병동은 실제 수간호사 계정을 먼저 가입시킨 후 다음 명령으로 연결한다:
+
+```bash
+uv run python -m app.manage link-head-account <병동_UUID> <수간호사_계정_이메일>
+```
+
+활성 상태의 실제 로그인 계정이면서 다른 재직 소속이 없어야 하고, 병동에는 교체 가능한 기존 수간호사 행이 정확히 한 명이어야 한다. 런타임 관리 API의 수간호사 권한 검사는 이 명령으로 우회할 수 없다.
+공유 토큰은 DB에 해시만 저장하며 링크 발급 응답을 멱등성 캐시에 남기지 않는다.
 
 ## 검증
 
@@ -77,6 +85,6 @@ uv run pytest -q
 ```
 
 28명 자동 편성·등록→생성→확정→공유 통합 흐름, 권한 분리/병동 격리, 링크 폐기, O 계산, 고정 셀, 월 경계, 데이터 전환, 기존 엑셀/잠금/버전 검사를 포함한다.
-사용하지 않는 계정/가입/알림 테스트는 폐지 API의 404 검사와 신규 관리·공유 계약 검사로 대체했다.
+일반 간호사 가입/신청/알림 테스트는 폐지 API의 404 검사와 수간호사 계정·공유 계약 검사로 대체했다.
 
 기존 프론트엔드 main은 쿠키 로그인과 `joinedAt`을 사용한다. 이 백엔드 변경과 함께 새 API에 연동해야 한다. 이 작업에서는 프론트엔드 소스를 수정하지 않았다.

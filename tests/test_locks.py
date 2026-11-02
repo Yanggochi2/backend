@@ -7,7 +7,7 @@ def _setup():
     add_nurses(h, 2)
     from conftest import Api
     h2 = Api()
-    h2.c.headers["Authorization"] = h.c.headers["Authorization"]
+    h2.data("POST", "/auth/login", {"email": h.email, "password": h.password})
     return h, h2, h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
 
 

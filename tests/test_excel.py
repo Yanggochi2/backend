@@ -48,7 +48,7 @@ def test_export_is_head_only():
     h = ward_head()
     n, _ = member(h)
     s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
-    err(n("GET", f"/wards/me/schedules/{s['id']}/export.xlsx"), 401, "MANAGEMENT_LINK_REQUIRED")
+    err(n("GET", f"/wards/me/schedules/{s['id']}/export.xlsx"), 401, "UNAUTHENTICATED")
 
 
 def test_export_writes_formula_like_names_as_text():

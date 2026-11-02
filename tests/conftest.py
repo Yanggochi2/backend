@@ -51,7 +51,12 @@ def _reset_signup_limit():
 
 
 def user(name="사용자") -> Api:
-    return Api()
+    u = Api()
+    u.password = "Password123!"
+    u.email = f"{uuid.uuid4()}@example.com"
+    u.account = u.data("POST", "/auth/signup", {"name": name, "email": u.email, "password": u.password,
+                                                   "termsAgreed": True}, status=201)
+    return u
 
 
 def err(r, status, code) -> dict:
@@ -63,12 +68,11 @@ def err(r, status, code) -> dict:
 
 
 def ward_head(d=1, e=1, n=1, preset="STANDARD") -> Api:
-    h = Api()
+    h = user("수간호사")
     h.workspace = h.data("POST", "/workspaces", {
         "hospitalName": "한빛", "wardName": "7병동", "headName": "수간호사", "joinedYear": 2000,
         "careerMonths": 312, "affiliationStart": "2025-01-01",
         "requiredStaff": {"D": d, "E": e, "N": n}, "rulePreset": preset}, status=201)
-    h.c.headers["Authorization"] = "Bearer " + h.workspace["managementToken"]
     return h
 
 

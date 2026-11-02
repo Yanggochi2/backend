@@ -1,4 +1,4 @@
-from conftest import Api, add_nurses, err, ward_head
+from conftest import add_nurses, err, user, ward_head
 
 
 def test_create_workspace_and_registered_head():
@@ -10,7 +10,7 @@ def test_create_workspace_and_registered_head():
 
 
 def test_invalid_staffing_rolls_back():
-    err(Api()("POST", "/workspaces", {"hospitalName": "병원", "wardName": "병동", "headName": "수간",
+    err(user()("POST", "/workspaces", {"hospitalName": "병원", "wardName": "병동", "headName": "수간",
         "joinedYear": 2000, "affiliationStart": "2025-01-01", "careerMonths": 100,
         "requiredStaff": {"D": 0, "E": 0, "N": 0}}), 422, "INVALID_STAFFING")
 
