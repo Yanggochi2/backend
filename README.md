@@ -13,12 +13,13 @@ FastAPI / Python 3.12 / SQLAlchemy / PostgreSQL·SQLite / OR-Tools CP-SAT.
 uv sync --frozen
 uv run uvicorn app.main:app --reload
 # 별도 터미널: 독립된 데모 병동 28명 + 이번 달 초안
-uv run python -m app.seed
+DEMO_HEAD_PASSWORD='<실행 시 지정할 비밀번호>' uv run python -m app.seed
 ```
 
 기본 DB는 `sqlite:///./nurs-local.db`. `DATABASE_URL`로 변경한다.
 데모는 수간호사 1명, 차지 2명, 일반 25명이며 프리셉터는 일반 간호사 중 5~6년차 2명이다.
-seed 출력의 데모 수간호사 이메일·비밀번호로 로그인한다.
+seed 출력의 데모 수간호사 이메일과 실행 시 `DEMO_HEAD_PASSWORD`로 지정한 비밀번호로 로그인한다.
+비밀번호는 소스·DB 응답·seed 출력에 원문으로 저장하지 않는다.
 데모 재실행은 인원을 중복 등록하지 않으며 근무표를 자동 확정하지 않는다.
 
 Docker 실행:
@@ -68,6 +69,13 @@ uv run python -m app.manage apply-client-rules <병동_UUID>
 ```
 
 명령은 차지/고연차/월 O/평일 근무 관련 설정만 새 기본값으로 전환한다. 기존 확정 근무표는 바꾸지 않는다. 과거 수동 `offTarget` 값도 보존하므로 자동 기준으로 돌아가려면 해당 월 `targetCount: null`을 적용한다.
+예전 편집 링크 방식으로 만들어진 병동은 실제 수간호사 계정을 먼저 가입시킨 후 다음 명령으로 연결한다:
+
+```bash
+uv run python -m app.manage link-head-account <병동_UUID> <수간호사_계정_이메일>
+```
+
+활성 상태의 실제 로그인 계정이면서 다른 재직 소속이 없어야 하고, 병동에는 교체 가능한 기존 수간호사 행이 정확히 한 명이어야 한다. 런타임 관리 API의 수간호사 권한 검사는 이 명령으로 우회할 수 없다.
 공유 토큰은 DB에 해시만 저장하며 링크 발급 응답을 멱등성 캐시에 남기지 않는다.
 
 ## 검증

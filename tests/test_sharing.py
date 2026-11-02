@@ -28,7 +28,7 @@ def test_share_is_read_only_and_minimizes_personal_data():
     assert 'statistics' not in data and 'readiness' not in data and 'lock' not in data
     public.c.headers['Authorization'] = 'Bearer ' + link['shareToken']
     err(public('GET', '/wards/me/nurses'), 401, 'UNAUTHENTICATED')
-    err(public('POST', '/wards/me/schedules', {'yearMonth': '2028-01'}), 403, 'CSRF_TOKEN_INVALID')
+    err(public('POST', '/wards/me/schedules', {'yearMonth': '2028-01'}), 401, 'UNAUTHENTICATED')
     assert public('PATCH', f"/shared/schedules/{link['shareToken']}", {}).status_code == 405
     by_name = public.data('GET', f"/shared/schedules/{link['shareToken']}?sort=name")
     assert [n['name'] for n in by_name['nurses']] == sorted(n['name'] for n in by_name['nurses'])

@@ -1,4 +1,6 @@
 """독립된 28명 데모 병동. python -m app.seed. 실제 병동의 인원/근무표는 변경하지 않는다."""
+import os
+
 from sqlalchemy import select
 
 from app.business import access, auth, members, nurses, schedules
@@ -10,7 +12,6 @@ from app.persistence.models import Nurse, User, Ward
 
 DEMO_WARD = "10/26 데모 병동"
 DEMO_EMAIL = "head-nurse@demo.invalid"
-DEMO_PASSWORD = "DemoNurse1026!"
 # 일반 간호사 25명. 프리셉터는 별도 속성이고 고경력 일반 간호사가 함께 있다.
 GENERAL = [
     ("강하늘", 300, False), ("권태호", 60, True), ("김수관", 72, True),
@@ -25,14 +26,17 @@ GENERAL = [
 ]
 
 
-def seed(db):
+def seed(db, head_password: str | None = None):
     today = today_kst()
     first = today.replace(day=1)
     ward = db.scalar(select(Ward).where(Ward.ward_name == DEMO_WARD, Ward.hospital_name == "데모 병원"))
     if ward is None:
         actor = db.scalar(select(User).where(User.email == DEMO_EMAIL))
         if actor is None:
-            auth.signup(db, "홍수간", DEMO_EMAIL, DEMO_PASSWORD, "seed")
+            password = head_password or os.getenv("DEMO_HEAD_PASSWORD")
+            if not password:
+                raise RuntimeError("새 데모 계정 생성에는 DEMO_HEAD_PASSWORD 환경 변수가 필요합니다")
+            auth.signup(db, "홍수간", DEMO_EMAIL, password, "seed")
             actor = db.scalar(select(User).where(User.email == DEMO_EMAIL))
         result = access.create(db, actor.id, dict(hospital_name="데모 병원", ward_name=DEMO_WARD, head_name="홍수간",
             joined_year=today.year - 26, career_months=312, affiliation_start=first,
@@ -57,7 +61,7 @@ def seed(db):
             nurses.patch(db, actor, existing[preceptor].id, {"preceptor_of": [existing[trainee].id]}, None)
     if schedules.by_month(db, ward_id, first) is None:
         schedules.create(db, actor, first.strftime("%Y-%m"))
-    return {**result, "headEmail": DEMO_EMAIL, "headPassword": DEMO_PASSWORD}
+    return {**result, "headEmail": DEMO_EMAIL}
 
 
 def main():
@@ -68,7 +72,7 @@ def main():
         result = seed(db)
         db.commit()
         print(json.dumps(result, ensure_ascii=False, default=str))
-    print("28명 데모 생성 완료. 출력된 수간호사 계정으로 로그인해 생성·확정을 진행하세요.")
+    print("28명 데모 생성 완료. DEMO_HEAD_PASSWORD로 지정한 비밀번호를 사용해 로그인하세요.")
 
 
 if __name__ == "__main__":

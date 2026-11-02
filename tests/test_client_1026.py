@@ -1,6 +1,7 @@
 from collections import Counter
 from dataclasses import replace
 from datetime import date, timedelta
+import secrets
 
 from sqlalchemy import create_engine, select, text
 
@@ -29,9 +30,11 @@ def test_off_formula_never_expands_to_fill_staffing_and_holidays_deduplicate():
 
 
 def test_seed_has_exactly_28_nurses_and_is_repeatable():
+    password = secrets.token_urlsafe(24)
     with SessionLocal() as db:
-        result = seed(db)
-        again = seed(db)
+        result = seed(db, password)
+        again = seed(db, password)
+        assert "headPassword" not in result
         assert result['ward']['id'] == again['ward']['id']
         rows = list(db.scalars(select(Nurse).where(Nurse.ward_id == result['ward']['id'])))
         assert len(rows) == 28
@@ -103,13 +106,14 @@ def test_seed_generation_confirmation_and_public_view():
     from app.persistence.models import Schedule
     from conftest import Api, confirm_schedule
     from app.business.common import today_kst
+    password = secrets.token_urlsafe(24)
     with SessionLocal() as db:
-        seeded = seed(db)
+        seeded = seed(db, password)
         schedule = db.scalar(select(Schedule).where(Schedule.ward_id == seeded['ward']['id']))
         schedule_id = str(schedule.id)
         db.commit()
     manager = Api()
-    manager.data('POST', '/auth/login', {'email': seeded['headEmail'], 'password': seeded['headPassword']})
+    manager.data('POST', '/auth/login', {'email': seeded['headEmail'], 'password': password})
     path = f'/wards/me/schedules/{schedule_id}'
     job = manager.data('POST', path + '/generations', {'maxSeconds': 30})
     assert job['status'] == 'SUCCEEDED', job['conflicts'][:5]

@@ -4,13 +4,25 @@ import uuid
 from datetime import date
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt, StringConstraints, field_validator
+from pydantic import (AfterValidator, BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt,
+                      StringConstraints, field_validator)
 from pydantic.alias_generators import to_camel
 
 from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+def _password_value(value: str) -> str:
+    if not value or value.isspace():
+        raise ValueError("INVALID_PASSWORD")
+    if len(value.encode("utf-8")) > 72:
+        raise ValueError("PASSWORD_TOO_LONG")
+    return value
+
+
+Password = Annotated[str, AfterValidator(_password_value)]
 
 
 class Body(BaseModel):
@@ -21,7 +33,7 @@ class Body(BaseModel):
 class Signup(Body):
     name: Name
     email: EmailStr
-    password: str
+    password: Password
     terms_agreed: bool
 
     @field_validator("password")
@@ -41,11 +53,11 @@ class Signup(Body):
 
 class Login(Body):
     email: NonBlank
-    password: NonBlank
+    password: Password
 
 
 class Withdraw(Body):
-    password: NonBlank
+    password: Password
 
 
 class Reason(Body):

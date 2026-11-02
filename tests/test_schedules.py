@@ -25,7 +25,7 @@ def test_nurse_cannot_see_draft():
     n, _ = member(h)
     err(n("GET", f"/wards/me/schedules/{s['id']}"), 401, "UNAUTHENTICATED")
     err(n("GET", f"/wards/me/schedules?yearMonth={YM}"), 401, "UNAUTHENTICATED")
-    err(n("POST", "/wards/me/schedules", {"yearMonth": "2030-01"}), 403, "CSRF_TOKEN_INVALID")
+    err(n("POST", "/wards/me/schedules", {"yearMonth": "2030-01"}), 401, "UNAUTHENTICATED")
 
 
 def test_edit_cells_is_atomic_and_versioned():

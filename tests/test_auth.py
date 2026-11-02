@@ -3,9 +3,11 @@ import uuid
 
 import pytest
 
+from app.business import access
+from app.business.common import ApiException
 from app.main import app
 from app.persistence.db import SessionLocal
-from app.persistence.models import Nurse
+from app.persistence.models import Nurse, User
 from conftest import Api, NURSE, add_nurses, err, user, ward_head
 
 
@@ -45,7 +47,48 @@ def test_account_without_head_role_cannot_use_management_api():
 
 def test_unauthenticated_user_cannot_use_management_api():
     err(Api()("GET", "/wards/me"), 401, "UNAUTHENTICATED")
-    err(Api()("POST", "/workspaces", {}), 403, "CSRF_TOKEN_INVALID")
+    err(Api()("POST", "/workspaces", {}), 401, "UNAUTHENTICATED")
+
+
+def test_passwords_preserve_whitespace_and_reject_invalid_bcrypt_lengths():
+    client = Api()
+    email = f"{uuid.uuid4()}@example.com"
+    password = " Password123! "
+    client.data("POST", "/auth/signup", {"name": "수간호사", "email": email, "password": password,
+                                           "termsAgreed": True}, status=201)
+    client("POST", "/auth/logout")
+    err(client("POST", "/auth/login", {"email": email, "password": password.strip()}),
+        401, "INVALID_CREDENTIALS")
+    client.data("POST", "/auth/login", {"email": email, "password": password})
+
+    for invalid in ("   ", "가" * 25, "a" * 73):
+        response = Api()("POST", "/auth/login", {"email": email, "password": invalid})
+        err(response, 400, "VALIDATION_ERROR")
+
+
+def test_existing_synthetic_head_can_be_associated_with_real_account():
+    h = ward_head()
+    replacement = user("기존 병동 수간호사")
+    ward_id = uuid.UUID(h.workspace["ward"]["id"])
+    head_id = uuid.UUID(h.workspace["headNurseId"])
+    with SessionLocal() as db:
+        head = db.get(Nurse, head_id)
+        synthetic = db.get(User, head.user_id)
+        synthetic.email = f"{uuid.uuid4()}@workspace.invalid"
+        synthetic.password_hash = "!"
+        result = access.associate_head_account(db, ward_id, replacement.email)
+        db.commit()
+    assert result["headNurseId"] == head_id and not result["alreadyLinked"]
+    assert replacement.data("GET", "/wards/me")["id"] == str(ward_id)
+
+    with SessionLocal() as db:
+        fake = User(name="합성", email=f"{uuid.uuid4()}@workspace.invalid", password_hash="!")
+        db.add(fake)
+        db.flush()
+        with pytest.raises(ApiException) as raised:
+            access.associate_head_account(db, ward_id, fake.email)
+        assert raised.value.status == 422 and raised.value.code == "ACCOUNT_NOT_ELIGIBLE"
+        db.rollback()
 
 
 def test_post_idempotency_and_ward_isolation():

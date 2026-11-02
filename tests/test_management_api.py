@@ -25,7 +25,7 @@ def test_charge_role_changes_revalidate_and_do_not_grant_permission():
     assert [x["id"] for x in h.data("GET", "/wards/me/charges")] == [nid]
     err(h("PUT", path, {"isCharge": False, "version": current["version"]}), 409, "VERSION_CONFLICT")
     err(n("PUT", path, {"isCharge": False, "version": changed["nurse"]["version"]}),
-        403, "CSRF_TOKEN_INVALID")
+        401, "UNAUTHENTICATED")
     other = ward_head()
     err(other("PUT", path, {"isCharge": True, "version": 1}), 404, "NURSE_NOT_FOUND")
     h.data("PUT", path, {"isCharge": False, "version": changed["nurse"]["version"]})
@@ -42,7 +42,7 @@ def test_holiday_override_reset_changes_off_target_and_is_scoped():
     day = next((NEXT.replace(day=i)).isoformat() for i in range(10, 20) if NEXT.replace(day=i).weekday() < 5)  # 기본 공휴일과 겹치지 않는다
     h.data("PUT", f"/wards/me/holidays/{day}", {"isHoliday": True, "name": "병원 휴일"})
     assert h.data("GET", f"/wards/me/off-targets/{YM}")["targetCount"] == initial + 1
-    err(n("DELETE", f"/wards/me/holidays/{day}"), 403, "CSRF_TOKEN_INVALID")
+    err(n("DELETE", f"/wards/me/holidays/{day}"), 401, "UNAUTHENTICATED")
     err(other("DELETE", f"/wards/me/holidays/{day}"), 404, "HOLIDAY_OVERRIDE_NOT_FOUND")
     assert h("DELETE", f"/wards/me/holidays/{day}").status_code == 204
     assert h.data("GET", f"/wards/me/off-targets/{YM}")["targetCount"] == initial

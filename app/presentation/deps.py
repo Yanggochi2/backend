@@ -39,9 +39,11 @@ class TxRoute(APIRoute):
             db = SessionLocal()
             request.state.db = db
             try:
-                if request.method in ("POST", "PUT", "PATCH", "DELETE") and csrf_required:
-                    await run_in_threadpool(auth.verify_csrf, db, request.cookies.get(ACCESS),
-                                            request.cookies.get(REFRESH), request.headers.get("X-CSRF-Token"))
+                access_cookie, refresh_cookie = request.cookies.get(ACCESS), request.cookies.get(REFRESH)
+                if (request.method in ("POST", "PUT", "PATCH", "DELETE") and csrf_required
+                        and (access_cookie or refresh_cookie)):
+                    await run_in_threadpool(auth.verify_csrf, db, access_cookie, refresh_cookie,
+                                            request.headers.get("X-CSRF-Token"))
                 idem = None
                 if request.method == "POST" and (key := request.headers.get("Idempotency-Key")):
                     body = await request.body()
