@@ -5,7 +5,7 @@ from conftest import NEXT, YM, add_nurses, err, fill_rotation, member, ward_head
 def test_rules_patch_and_preset():
     h = ward_head(2, 2, 1)
     n, _ = member(h)
-    err(n("GET", "/wards/me/rules"), 401, "MANAGEMENT_LINK_REQUIRED")
+    err(n("GET", "/wards/me/rules"), 401, "UNAUTHENTICATED")
     by = {r["code"]: r for r in h.data("GET", "/wards/me/rules")}
     assert by["COVERAGE"]["parameters"] == {"D": 2, "E": 2, "N": 1} and by["PREGNANT_NIGHT"]["locked"]
     err(h("PATCH", f"/wards/me/rules/{by['PREGNANT_NIGHT']['id']}", {"enabled": False}), 409, "RULE_CONFLICT")

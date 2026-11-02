@@ -23,9 +23,9 @@ def test_create_and_read():
 def test_nurse_cannot_see_draft():
     h, s = _ward_with_schedule()
     n, _ = member(h)
-    err(n("GET", f"/wards/me/schedules/{s['id']}"), 401, "MANAGEMENT_LINK_REQUIRED")
-    err(n("GET", f"/wards/me/schedules?yearMonth={YM}"), 401, "MANAGEMENT_LINK_REQUIRED")
-    err(n("POST", "/wards/me/schedules", {"yearMonth": "2030-01"}), 401, "MANAGEMENT_LINK_REQUIRED")
+    err(n("GET", f"/wards/me/schedules/{s['id']}"), 401, "UNAUTHENTICATED")
+    err(n("GET", f"/wards/me/schedules?yearMonth={YM}"), 401, "UNAUTHENTICATED")
+    err(n("POST", "/wards/me/schedules", {"yearMonth": "2030-01"}), 403, "CSRF_TOKEN_INVALID")
 
 
 def test_edit_cells_is_atomic_and_versioned():

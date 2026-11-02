@@ -109,7 +109,7 @@ def test_seed_generation_confirmation_and_public_view():
         schedule_id = str(schedule.id)
         db.commit()
     manager = Api()
-    manager.c.headers['Authorization'] = 'Bearer ' + seeded['managementToken']
+    manager.data('POST', '/auth/login', {'email': seeded['headEmail'], 'password': seeded['headPassword']})
     path = f'/wards/me/schedules/{schedule_id}'
     job = manager.data('POST', path + '/generations', {'maxSeconds': 30})
     assert job['status'] == 'SUCCEEDED', job['conflicts'][:5]

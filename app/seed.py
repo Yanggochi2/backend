@@ -1,14 +1,16 @@
 """독립된 28명 데모 병동. python -m app.seed. 실제 병동의 인원/근무표는 변경하지 않는다."""
 from sqlalchemy import select
 
-from app.business import access, members, nurses, schedules
+from app.business import access, auth, members, nurses, schedules
 from app.business.common import today_kst
 from app.domain.model import DutyRole, NurseStatus, Preset
 from app.persistence.db import Base, SessionLocal, engine
 from app.persistence.migrations import upgrade
-from app.persistence.models import Nurse, Ward
+from app.persistence.models import Nurse, User, Ward
 
 DEMO_WARD = "10/26 데모 병동"
+DEMO_EMAIL = "head-nurse@demo.invalid"
+DEMO_PASSWORD = "DemoNurse1026!"
 # 일반 간호사 25명. 프리셉터는 별도 속성이고 고경력 일반 간호사가 함께 있다.
 GENERAL = [
     ("강하늘", 300, False), ("권태호", 60, True), ("김수관", 72, True),
@@ -28,13 +30,17 @@ def seed(db):
     first = today.replace(day=1)
     ward = db.scalar(select(Ward).where(Ward.ward_name == DEMO_WARD, Ward.hospital_name == "데모 병원"))
     if ward is None:
-        result = access.create(db, dict(hospital_name="데모 병원", ward_name=DEMO_WARD, head_name="홍수간",
+        actor = db.scalar(select(User).where(User.email == DEMO_EMAIL))
+        if actor is None:
+            auth.signup(db, "홍수간", DEMO_EMAIL, DEMO_PASSWORD, "seed")
+            actor = db.scalar(select(User).where(User.email == DEMO_EMAIL))
+        result = access.create(db, actor.id, dict(hospital_name="데모 병원", ward_name=DEMO_WARD, head_name="홍수간",
             joined_year=today.year - 26, career_months=312, affiliation_start=first,
             required_staff={"D": 7, "E": 5, "N": 4}, rule_preset=Preset.STANDARD))
         ward_id = result["ward"]["id"]
     else:
         ward_id = ward.id
-        result = {"ward": {"id": ward_id}, **access.issue(db, ward_id)}
+        result = {"ward": {"id": ward_id}}
     actor = db.scalar(select(Nurse).where(Nurse.ward_id == ward_id, Nurse.role == "HEAD_NURSE")).user_id
     existing = {n.name: n for n in db.scalars(select(Nurse).where(Nurse.ward_id == ward_id))}
     rows = [("김차지", 276, False, DutyRole.CHARGE), ("이차지", 120, False, DutyRole.CHARGE)]
@@ -51,7 +57,7 @@ def seed(db):
             nurses.patch(db, actor, existing[preceptor].id, {"preceptor_of": [existing[trainee].id]}, None)
     if schedules.by_month(db, ward_id, first) is None:
         schedules.create(db, actor, first.strftime("%Y-%m"))
-    return result
+    return {**result, "headEmail": DEMO_EMAIL, "headPassword": DEMO_PASSWORD}
 
 
 def main():
@@ -62,7 +68,7 @@ def main():
         result = seed(db)
         db.commit()
         print(json.dumps(result, ensure_ascii=False, default=str))
-    print("28명 데모 생성 완료. 기존 데모에 재실행하면 관리 링크를 교체합니다. 생성·확정은 관리 화면에서 수행하세요.")
+    print("28명 데모 생성 완료. 출력된 수간호사 계정으로 로그인해 생성·확정을 진행하세요.")
 
 
 if __name__ == "__main__":

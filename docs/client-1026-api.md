@@ -2,9 +2,11 @@
 
 기본 경로 `/api/v1`. JSON은 camelCase, 단일 응답은 `{data}`, 목록은 `{data, meta}`, 오류는 기존 `{error}` 형식을 유지한다.
 
-## 1. 병동 생성과 편집 링크
+## 1. 수간호사 계정과 병동 생성
 
-`POST /workspaces` — 로그인 없이 새 병동을 만들 때만 사용한다. 기존 병동 관리 링크는 운영자 CLI로 발급한다.
+수간호사는 `POST /auth/signup` 또는 `POST /auth/login`으로 자신의 계정에 로그인한다. 세션은 HttpOnly 쿠키로 유지하며 상태 변경 요청에는 `CSRF_TOKEN` 쿠키 값을 `X-CSRF-Token` 헤더로 보낸다.
+
+`POST /workspaces` — 로그인한 계정을 새 병동의 수간호사로 등록한다.
 
 ```json
 {
@@ -19,16 +21,13 @@
 }
 ```
 
-201 응답: `ward`, `headNurseId`, `managementToken`, `managementPath`.
-`managementPath`는 `/manage#token=<비밀값>` 형태의 **프론트엔드 상대 경로 계약**이다. 해당 프론트엔드 화면은 별도 구현해야 한다. 이 API 서버가 HTML 화면을 제공하지 않는다.
-
-관리 API에는 `Authorization: Bearer <managementToken>`을 전송한다. 브라우저 자동 전송 쿠키나 쿼리 토큰은 허용하지 않는다. 프론트는 fragment에서 토큰을 읽고 주소창에서 제거한 뒤 관리 요청 헤더에 넣는다. 다른 도메인 API라면 배포 프록시의 Authorization 전달과 CORS 허용 정책도 설정한다.
+201 응답은 `ward`, `headNurseId`를 반환한다.
 
 - `GET /wards/me`: 병동 정보.
-- `POST /wards/me/management-link`: 관리 링크 교체. 응답의 새 토큰으로 헤더를 교체해야 하며 이전 토큰은 즉시 무효.
-- 토큰 없음/불일치: 401 `MANAGEMENT_LINK_REQUIRED`.
+- 로그인하지 않음: 401 `UNAUTHENTICATED`.
+- 수간호사 역할이 아님: 403 `FORBIDDEN`.
 - 공유 토큰으로 관리 API 호출 불가. 다른 병동 리소스: 404.
-- 일반 POST는 기존 `Idempotency-Key` 지원. 비밀값을 반환하는 `/workspaces`, `/management-link`, `/share-link`는 저장 캐시에서 제외하므로 재호출마다 새 링크를 발급한다.
+- 일반 POST는 기존 `Idempotency-Key` 지원. 비밀값을 반환하는 `/share-link`는 저장 캐시에서 제외한다.
 
 ## 2. 간호사 등록·수정
 
@@ -118,8 +117,8 @@ AL·ED는 O로 세지 않는다. 중도 소속은 월 목표에 소속 일수 �
 
 프론트에서 수행할 작업:
 
-1. 로그인/가입/신청/승인 화면과 쿠키 인증 가드를 제거하고 관리 링크 진입·토큰 헤더 전달을 구현한다.
-2. `/manage`, `/shared/[token]` 진입 화면과 링크 교체/복사 UI를 만든다.
+1. 수간호사 회원가입·로그인과 세션 확인 화면을 유지하고 일반 간호사 가입·신청·승인 화면을 제거한다.
+2. 수간호사 관리 화면과 `/shared/[token]` 조회 화면, 공유 링크 교체/복사 UI를 만든다.
 3. 등록·수정 폼을 공유하고 `joinedAt`을 `joinedYear`, 프리셉터를 별도 체크/지정 필드로 바꾼다.
 4. 근무표 월간 기본 화면, 숙련도/이름 두 정렬 옵션을 반영한다.
 5. 공개 화면은 읽기 전용으로 구성한다. 생성 실패·공유 폐기·관리 토큰 교체 상태를 구분해 표시한다.

@@ -1,9 +1,10 @@
 """요청 본문 검증. JSON 필드는 camelCase, 파이썬 속성은 snake_case"""
+import re
 import uuid
 from datetime import date
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, StrictBool, StrictInt, StringConstraints, field_validator
 from pydantic.alias_generators import to_camel
 
 from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity
@@ -15,6 +16,36 @@ NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1,
 class Body(BaseModel):
     # 공통 요청 필드. 간호사·병동 생성 폼은 추가 필드를 거절한다.
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class Signup(Body):
+    name: Name
+    email: EmailStr
+    password: str
+    terms_agreed: bool
+
+    @field_validator("password")
+    @classmethod
+    def password_rule(cls, v: str) -> str:
+        if len(v) < 8 or not re.search(r"[A-Za-z]", v) or not re.search(r"\d", v):
+            raise ValueError("WEAK_PASSWORD")
+        return v
+
+    @field_validator("terms_agreed")
+    @classmethod
+    def must_agree(cls, v: bool) -> bool:
+        if not v:
+            raise ValueError("TERMS_NOT_AGREED")
+        return v
+
+
+class Login(Body):
+    email: NonBlank
+    password: NonBlank
+
+
+class Withdraw(Body):
+    password: NonBlank
 
 
 class Reason(Body):
