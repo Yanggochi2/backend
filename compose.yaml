@@ -22,8 +22,6 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-nurs}
       POSTGRES_USER: ${POSTGRES_USER:-nurs}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nurs}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}  # 로컬 http. HTTPS 배포에서는 true
-      REMINDER_EVERY_SECONDS: ${REMINDER_EVERY_SECONDS:-}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:

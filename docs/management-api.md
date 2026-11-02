@@ -1,3 +1,5 @@
+> 이전 설계 기록입니다. 현재 10/26 회의 반영 계약은 저장소의 `docs/client-1026-api.md`와 `docs/client-1026-plan.md`를 참고하세요.
+
 # 규칙 엔진·병동 관리 API
 
 기본 경로 `/api/v1`. 성공은 `{ "data": ... }`, 오류는 `{ "error": { "code", "message", "traceId", ... } }`.

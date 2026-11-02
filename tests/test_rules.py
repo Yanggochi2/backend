@@ -22,7 +22,7 @@ def day(n):
 
 
 def test_detects_hard_violations():
-    rules = Rules.preset(Preset.STANDARD, 0, 0, 0)
+    rules = isolated_rules(Preset.STANDARD, 0, 0, 0)
     rules.settings["MAX_CONSECUTIVE_NIGHTS"] = replace(rules.settings["MAX_CONSECUTIVE_NIGHTS"], parameters={"max": 1})
     rules.settings["MAX_CONSECUTIVE_WORK"] = replace(rules.settings["MAX_CONSECUTIVE_WORK"], parameters={"max": 31})
     rules.settings["CHARGE_DAY_ONLY"] = replace(rules.settings["CHARGE_DAY_ONLY"], parameters={"allowedDuties": ["D"]})
@@ -30,7 +30,7 @@ def test_detects_hard_violations():
     cells = {1: {START: Duty.N}, 2: {day(1): Duty.N}, 3: {START: Duty.N, day(1): Duty.N, day(2): Duty.D}}
     # 신입(2)은 같은 날 임신자(3)가 N에 있어 단독이 아님. 3번의 N N D는 역순환이면서 야간 후 휴식 부족
     assert ids(validate(Roster(OCT, ns, cells, rules, 0))) == {
-        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "NIGHT_REST", "COVERAGE"}
+        "CHARGE_DAY_ONLY", "PREGNANT_NIGHT", "MAX_CONSECUTIVE_NIGHTS", "NIGHT_TO_DAY", "NIGHT_REST", "WEEKDAY_DAY_ONLY"}
     alone = Roster(OCT, [ns[1]], {2: {START: Duty.N}}, rules, 0)
     assert "NEW_NIGHT_ALONE" in ids(validate(alone))
 
@@ -38,7 +38,7 @@ def test_detects_hard_violations():
 def test_generator_satisfies_hard_rules_when_staff_is_enough():
     ns = [nurse(1, DutyRole.CHARGE), nurse(2, DutyRole.NEW), nurse(3, status=NurseStatus.PREGNANT)]
     ns += [nurse(i) for i in range(4, 15)]
-    rules = Rules.preset(Preset.STANDARD, 3, 2, 2)
+    rules = isolated_rules(Preset.STANDARD, 3, 2, 2)
     # 차지 1명뿐이라 근무마다 차지·고연차는 끈다
     for code in ("CHARGE_EVERY_SHIFT", "SENIOR_EVERY_SHIFT"):
         rules.settings[code] = replace(rules.settings[code], enabled=False)
@@ -49,7 +49,7 @@ def test_generator_satisfies_hard_rules_when_staff_is_enough():
 
 
 def test_reports_coverage_shortage_when_staff_is_short():
-    rules = Rules.preset(Preset.STANDARD, 3, 3, 3)
+    rules = isolated_rules(Preset.STANDARD, 3, 3, 3)
     ns = [nurse(1)]
     cells = generate(Roster(OCT, ns, {}, rules, 0))
     assert "COVERAGE" in ids(validate(Roster(OCT, ns, cells, rules, 0)))
@@ -57,19 +57,17 @@ def test_reports_coverage_shortage_when_staff_is_short():
 
 def test_generator_keeps_fixed_cells_and_counts_them_toward_coverage():
     ns = [nurse(i) for i in range(1, 13)]
-    rules = Rules.preset(Preset.STANDARD, 2, 2, 2)
+    rules = isolated_rules(Preset.STANDARD, 2, 2, 2)
     cells = generate(Roster(OCT, ns, {1: {START: Duty.N}}, rules, 0))
     assert cells[1][START] == Duty.N
     assert sum(1 for n in ns if cells[n.id].get(START) == Duty.N) == 2, "고정 셀 포함 필요 인원만큼만 배정"
 
 
-def test_coverage_requires_exact_headcount_and_reports_overstaffing():
-    rules = Rules.preset(Preset.STANDARD, 1, 0, 0)
+def test_coverage_allows_staff_above_minimum():
+    rules = isolated_rules(Preset.STANDARD, 1, 0, 0)
     ns = [nurse(1), nurse(2)]
     roster = Roster(OCT, ns, {1: {START: Duty.D}, 2: {START: Duty.D}}, rules, 15)
-    violation = next(v for v in validate(roster) if v.rule_id == "COVERAGE" and v.date == START)
-    assert violation.severity == Severity.HARD
-    assert "초과" in violation.message
+    assert not any(v.rule_id == "COVERAGE" and v.date == START for v in validate(roster))
 
 
 def test_off_target_detects_both_excess_and_shortage():
@@ -89,14 +87,14 @@ def test_off_target_detects_both_excess_and_shortage():
 def test_generator_distributes_off_within_target_tolerance():
     ns = [nurse(i) for i in range(1, 11)]
     rules = Rules.preset(Preset.STANDARD, 2, 2, 1)
-    roster = Roster(OCT, ns, {}, rules, 16)
+    roster = Roster(OCT, ns, {}, rules, 15)
     result = roster.with_cells(generate(roster))
     assert not [v for v in validate(result) if v.rule_id in {"COVERAGE", "OFF_TARGET"}]
 
 
 def test_consecutive_rules_span_month_boundary():
     """리뷰 #1: 9/29~10/3 연속 야간 5일은 월이 바뀌어도 위반이어야 한다"""
-    rules = Rules.preset(Preset.STANDARD, 0, 0, 0)  # 연속 야간 최대 3, N→D 금지
+    rules = isolated_rules(Preset.STANDARD, 0, 0, 0)  # 연속 야간 최대 3, N→D 금지
     ns = [nurse(1), nurse(2)]
     before = {1: {day(-2): Duty.N, day(-1): Duty.N}, 2: {day(-1): Duty.N}}
     cells = {1: {START: Duty.N, day(1): Duty.N, day(2): Duty.N}, 2: {START: Duty.D}}
@@ -107,7 +105,7 @@ def test_consecutive_rules_span_month_boundary():
 
 
 def test_generator_respects_previous_month_streak():
-    rules = Rules.preset(Preset.STANDARD, 0, 0, 1)
+    rules = isolated_rules(Preset.STANDARD, 0, 0, 1)
     ns = [nurse(1), nurse(2)]
     before = {1: {day(-3): Duty.N, day(-2): Duty.N, day(-1): Duty.N}}
     cells = generate(Roster(OCT, ns, {}, rules, 0, before=before))
@@ -116,7 +114,7 @@ def test_generator_respects_previous_month_streak():
 
 def test_wish_duty_is_preferred_and_checked():
     """리뷰 #9: 희망 근무는 생성에 반영되고, 미반영 시 소프트 위반"""
-    rules = Rules.preset(Preset.STANDARD, 1, 0, 0)
+    rules = isolated_rules(Preset.STANDARD, 1, 0, 0)
     ns = [nurse(1), nurse(2)]
     wish = {2: {START: Duty.D}}
     cells = generate(Roster(OCT, ns, {}, rules, 0, wish_duties=wish))
@@ -124,3 +122,10 @@ def test_wish_duty_is_preferred_and_checked():
     ignored = {1: {START: Duty.D}, 2: {START: Duty.O}}
     vs = validate(Roster(OCT, ns, ignored, rules, 0, wish_duties=wish))
     assert any(v.rule_id == "WISH_DUTY_IGNORED" and v.severity == Severity.SOFT for v in vs)
+
+
+def isolated_rules(*args):
+    from dataclasses import replace
+    rules = Rules.preset(*args)
+    rules.settings["OFF_TARGET"] = replace(rules.settings["OFF_TARGET"], enabled=False)
+    return rules

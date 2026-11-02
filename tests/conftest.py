@@ -51,11 +51,7 @@ def _reset_signup_limit():
 
 
 def user(name="사용자") -> Api:
-    """가입한(= 로그인된) 사용자. 테스트끼리 겹치지 않게 이메일은 매번 새로"""
-    a = Api()
-    a.data("POST", "/auth/signup", {"name": name, "email": f"{uuid.uuid4().hex[:10]}@x.com", "password": "pass1234",
-                                    "termsAgreed": True})
-    return a
+    return Api()
 
 
 def err(r, status, code) -> dict:
@@ -67,22 +63,22 @@ def err(r, status, code) -> dict:
 
 
 def ward_head(d=1, e=1, n=1, preset="STANDARD") -> Api:
-    """병동을 개설한 수간호사"""
-    h = user("수간호사")
-    h.data("POST", "/wards", {"hospitalName": "한빛", "wardName": "7병동", "requiredStaff": {"D": d, "E": e, "N": n},
-                              "rulePreset": preset}, status=201)
+    h = Api()
+    h.workspace = h.data("POST", "/workspaces", {
+        "hospitalName": "한빛", "wardName": "7병동", "headName": "수간호사", "joinedYear": 2000,
+        "careerMonths": 312, "affiliationStart": "2025-01-01",
+        "requiredStaff": {"D": d, "E": e, "N": n}, "rulePreset": preset}, status=201)
+    h.c.headers["Authorization"] = "Bearer " + h.workspace["managementToken"]
     return h
 
 
 def member(h: Api, name="간호사") -> tuple[Api, str]:
-    """h의 병동에 가입 승인된 일반 간호사와 그 간호사 id"""
-    n = user(name)
-    code = h.data("GET", "/wards/me/join-code")["code"]
-    rid = n.data("POST", "/ward-membership-requests", {"joinCode": code})["id"]
-    return n, h.data("POST", f"/wards/me/membership-requests/{rid}/approve")["id"]
+    # 일반 간호사는 계정을 만들지 않는다. 관리자가 프로필만 등록한다.
+    nurse = h.data("POST", "/wards/me/nurses", {**NURSE, "name": name})
+    return Api(), nurse["id"]
 
 
-NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedAt": "2025-01-01", "careerMonths": 12, "skillLevel": 3,
+NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": 2025, "careerMonths": 12, "skillLevel": 3,
          "affiliationStart": "2025-01-01"}
 
 
@@ -99,7 +95,26 @@ def fill_rotation(h: Api, s: dict) -> dict:
     """
     pattern = ["D", "D", "E", "E", "O", "O", "N", "N", "O", "O"]
     days = sorted({c["date"] for c in s["cells"]})
-    changes = [{"nurseId": n["id"], "date": d, "dutyCode": pattern[(2 * i + j) % 10]}
+    off = next(r for r in h.data("GET", "/wards/me/rules") if r["code"] == "OFF_TARGET")
+    h.data("PATCH", f"/wards/me/rules/{off['id']}", {"enabled": False})
+    holidays = set(s["holidays"])
+    from datetime import date
+    changes = [{"nurseId": n["id"], "date": d, "dutyCode":
+                ("O" if date.fromisoformat(d).weekday() >= 5 or d in holidays else "D")
+                if n["role"] == "HEAD_NURSE" else pattern[(2 * (i - 1) + j) % 10]}
                for i, n in enumerate(s["nurses"]) for j, d in enumerate(days)]
     h.data("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": s["version"], "changes": changes})
     return h.data("GET", f"/wards/me/schedules/{s['id']}")
+
+
+def confirm_schedule(h, s):
+    all_violations = []
+    page = 0
+    while True:
+        result = h("GET", f"/wards/me/schedules/{s['id']}/violations?size=100&page={page}").json()
+        all_violations += result["data"]
+        page += 1
+        if page >= result["meta"]["totalPages"]:
+            break
+    return h.data("POST", f"/wards/me/schedules/{s['id']}/confirm",
+                  {"acknowledgedSoftViolationIds": [v["id"] for v in all_violations if v["severity"] == "SOFT"]})

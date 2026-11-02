@@ -1,6 +1,7 @@
 """SCH-01~11, RULE-03"""
 import secrets
 import uuid
+from dataclasses import replace
 from datetime import date, timedelta
 
 from sqlalchemy import select, update
@@ -12,10 +13,11 @@ from app.business.common import (ApiException, bad_request, conflict, iso, month
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
 from app.domain import validator
+from app.domain.nurse_sort import sorted_nurses
 from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Roster,
                               ScheduleStatus, Severity, Violation)
 from app.persistence.db import now
-from app.persistence.models import Assignment, Nurse, Schedule, User, WorkRequest
+from app.persistence.models import Assignment, Nurse, Schedule, ScheduleShare, User, WorkRequest
 
 # SCH-11 무활동 자동 해제 (🔶 권장값)
 LOCK_TTL = timedelta(minutes=30)
@@ -44,15 +46,15 @@ def create(db: Session, user_id: uuid.UUID, ym: str) -> dict:
     return view(db, s, m)
 
 
-def get_by_month(db: Session, user_id: uuid.UUID, ym: str) -> dict:
+def get_by_month(db: Session, user_id: uuid.UUID, ym: str, sort: str | None = None) -> dict:
     m = members.require(db, user_id)
     s = by_month(db, m.ward_id, parse_month(ym))
-    return view(db, _visible(s, m), m)
+    return view(db, _visible(s, m), m, sort)
 
 
-def get(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
+def get(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, sort: str | None = None) -> dict:
     m = members.require(db, user_id)
-    return view(db, find(db, m, schedule_id), m)
+    return view(db, find(db, m, schedule_id), m, sort)
 
 
 def coverage(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> list[dict]:
@@ -75,7 +77,7 @@ def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_ver
 
 
 def apply_changes(db: Session, s: Schedule, changes: list[tuple[uuid.UUID, date, Duty | None]]) -> int:
-    """셀 변경 공통. AL 셀·소속 기간 밖 셀은 보호된다 (422 PROTECTED_CELL)"""
+    """관리자가 연차·교육도 직접 입력한다. 소속 기간 밖 셀은 보호된다."""
     r = roster(db, s)
     by_id = {n.id: n for n in r.nurses}
     existing = {(a.nurse_id, a.date): a for a in _assignments(db, s.id)}
@@ -89,7 +91,7 @@ def apply_changes(db: Session, s: Schedule, changes: list[tuple[uuid.UUID, date,
         if d.replace(day=1) != r.month:
             raise bad_request("VALIDATION_ERROR", f"근무표 대상 월의 날짜가 아닙니다: {d}", "changes.date")
         a = existing.get((nurse_id, d))
-        if duty == Duty.AL or (a and a.duty == Duty.AL) or not n.affiliated(d):
+        if not n.affiliated(d):
             raise unprocessable("PROTECTED_CELL", f"편집할 수 없는 셀입니다: {n.name} {d}",
                                 {"nurseId": str(nurse_id), "date": d.isoformat()})
         if (a.duty if a else None) == duty:
@@ -165,10 +167,14 @@ def cancel_confirmation(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID,
     reason = require_reason(reason)
     m = members.require_head(db, user_id)
     s = find(db, m, schedule_id)
+    db.refresh(s, with_for_update=True)
     if s.status == ScheduleStatus.ARCHIVED:
         raise conflict("ARCHIVED_SCHEDULE", "다음 달이 확정되어 보관된 근무표는 취소할 수 없습니다")
     if s.status != ScheduleStatus.CONFIRMED:
         raise conflict("INVALID_SCHEDULE_STATE", "확정 상태가 아닙니다")
+    share = db.scalar(select(ScheduleShare).where(ScheduleShare.schedule_id == s.id))
+    if share:
+        db.delete(share)
     s.status = ScheduleStatus.DRAFT
     s.cancelled_at, s.cancelled_by, s.cancel_reason = now(), user_id, reason
     touch(db, s)
@@ -190,7 +196,7 @@ def get_off_target(db: Session, user_id: uuid.UUID, ym: str) -> dict:
 
 
 def patch_off_target(db: Session, user_id: uuid.UUID, ym: str, target: int | None, reason: str | None) -> dict:
-    """targetCount=null이면 자동 계산(공휴일 수 + 1)으로 돌아간다"""
+    """targetCount=null이면 자동 계산(주말∪공휴일 + 1)으로 돌아간다"""
     m = members.require_head(db, user_id)
     s = by_month(db, m.ward_id, parse_month(ym))
     if s is None:
@@ -360,22 +366,20 @@ def roster(db: Session, s: Schedule) -> Roster:
     nurses = sorted((n for n in db.scalars(select(Nurse).where(Nurse.ward_id == s.ward_id))
                      if n.affiliation_start <= last and (n.affiliation_end is None or n.affiliation_end >= first)),
                     key=lambda n: (n.name, str(n.id)))
-    wish_offs: dict = {}
-    for q in approved(db, s.ward_id, first, RequestType.PREFERRED_OFF):
-        wish_offs.setdefault(q.nurse_id, set()).update(q.dates())
-    wish_duties: Cells = {}
-    for q in approved(db, s.ward_id, first, RequestType.PREFERRED_SHIFT):
-        for d in q.dates():
-            wish_duties.setdefault(q.nurse_id, {})[d] = q.preferred_duty
+    nurses = sorted_nurses(nurses)
     # 연속 야간·근무를 월 경계 너머로 세기 위해 이전 달 근무표를 함께 넘긴다
     prev = by_month(db, s.ward_id, (first - timedelta(days=1)).replace(day=1))
     return Roster(first, [n.info() for n in nurses], _cells(db, s.id), rules.load(db, s.ward_id),
-                  _off_target(db, s), wish_offs, wish_duties, _cells(db, prev.id) if prev else {})
+                  _off_target(db, s), {}, {}, _cells(db, prev.id) if prev else {},
+                  frozenset(rules.holiday_dates(db, s.ward_id, first)))
 
 
-def view(db: Session, s: Schedule, m: Member) -> dict:
+def view(db: Session, s: Schedule, m: Member, sort: str | None = None) -> dict:
     """역할에 따라 필드 차등: 임신 여부(nightBlocked)·잠금·확정 가능 여부는 수간호사만, 통계는 본인만"""
+    from app.business.nurses import normalize_sort
+    order = normalize_sort(sort)
     r = roster(db, s)
+    r = replace(r, nurses=sorted_nurses(r.nurses, order))
     holidays = rules.holiday_dates(db, s.ward_id, r.month)
     status = {n.id: n.status for n in r.nurses}
     can_edit = m.is_head and s.status == ScheduleStatus.DRAFT
@@ -384,9 +388,11 @@ def view(db: Session, s: Schedule, m: Member) -> dict:
         for d in r.days():
             x = r.cell(n.id, d)
             cells.append({"nurseId": n.id, "date": d.isoformat(), "dutyCode": x,
-                          "editable": can_edit and n.affiliated(d) and x != Duty.AL})
+                          "editable": can_edit and n.affiliated(d)})
     return {"id": s.id, "yearMonth": s.year_month, "status": s.status, "version": s.version,
-            "nurses": [{"id": n.id, "name": n.name, "dutyRole": n.duty_role,
+            "defaultView": "month", "defaultSort": "proficiency", "sort": order,
+            "nurses": [{"id": n.id, "name": n.name, "dutyRole": "GENERAL" if n.duty_role.value == "PRECEPTOR" else n.duty_role,
+                        "role": n.role, "careerMonths": n.career_months, "isPreceptor": n.is_preceptor,
                         "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
                         "nightBlocked": status[n.id] == NurseStatus.PREGNANT if m.is_head else None}
                        for n in r.nurses],
@@ -427,9 +433,7 @@ def touch(db: Session, s: Schedule) -> None:
 
 
 def pending_requests(db: Session, s: Schedule) -> list[uuid.UUID]:
-    return list(db.scalars(select(WorkRequest.id).where(
-        WorkRequest.ward_id == s.ward_id, WorkRequest.status == RequestStatus.PENDING,
-        WorkRequest.year_month == s.year_month).order_by(WorkRequest.created_at)))
+    return []  # 온라인 신청 기능 종료: 과거 대기 신청은 확정을 막지 않는다.
 
 
 def approved(db: Session, ward_id: uuid.UUID, first: date, type_: RequestType) -> list[WorkRequest]:
@@ -475,7 +479,7 @@ def _stat(r: Roster, nurse_id, holidays: set[date]) -> dict:
             weekend += 1
         if x.is_work and d in holidays:
             holiday += 1
-    return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": r.off_target,
+    return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": validator.off_target(r, next(n for n in r.nurses if n.id == nurse_id)),
             "weekendWork": weekend, "holidayWork": holiday}
 
 
@@ -505,7 +509,7 @@ def _off_target_view(db: Session, s: Schedule) -> dict:
 
 
 def _off_target(db: Session, s: Schedule) -> int:
-    """필요 근무 슬롯과 소속 인원 일수로 달성 가능한 평균 OFF 목표를 계산한다."""
+    """인력 수와 무관하게 달력 기준 O 목표를 계산한다. 명시적인 수동값은 유지."""
     if s.off_target is not None:
         return s.off_target
     return _automatic_off_target(db, s)
@@ -513,23 +517,9 @@ def _off_target(db: Session, s: Schedule) -> int:
 
 def _automatic_off_target(db: Session, s: Schedule) -> int:
     first = parse_month(s.year_month)
-    last = month_end(first)
-    month_days = (last - first).days + 1
-    nurses = [n for n in db.scalars(select(Nurse).where(Nurse.ward_id == s.ward_id))
-              if n.affiliation_start <= last and (n.affiliation_end is None or n.affiliation_end >= first)]
-    if not nurses:
-        return 0
-    available_days = sum(
-        (min(n.affiliation_end or last, last) - max(n.affiliation_start, first)).days + 1
-        for n in nurses
-    )
-    required_work = month_days * sum(rules.staffing(db, s.ward_id).values())
-    available_off = max(0, available_days - required_work)
-    staffing_target = (available_off + len(nurses) // 2) // len(nurses)
-    # 최솟값 = 주말(토·일) + 평일 공휴일 + 1(보건휴가). 주 5일제라 토·일은 쉬는 날로 센다
+    month_days = (month_end(first) - first).days + 1
     weekends = {first + timedelta(days=i) for i in range(month_days) if (first + timedelta(days=i)).weekday() >= 5}
-    holiday_target = len(weekends | rules.holiday_dates(db, s.ward_id, first)) + 1
-    return min(month_days, max(holiday_target, staffing_target))
+    return min(month_days, len(weekends | rules.holiday_dates(db, s.ward_id, first)) + 1)
 
 
 def release_locks(db: Session, ward_id: uuid.UUID, user_id: uuid.UUID) -> None:

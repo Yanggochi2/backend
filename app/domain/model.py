@@ -16,7 +16,7 @@ class Duty(StrEnum):
 
     @property
     def is_work(self) -> bool:
-        return self in (Duty.D, Duty.E, Duty.N)
+        return self in (Duty.D, Duty.E, Duty.N, Duty.ED)
 
 
 class Role(StrEnum):
@@ -111,7 +111,7 @@ class RuleSetting:
 
 
 NIGHT_ONLY_MAX_NIGHTS = 15  # 나이트 전담 월 나이트 상한
-SENIOR_ROLES = frozenset({DutyRole.CHARGE, DutyRole.PRECEPTOR})  # 근무마다 1명 이상 있어야 하는 고연차
+SENIOR_ROLES = frozenset({DutyRole.CHARGE})  # 프리셉터는 직급이 아니다. 기존 선택 규칙 호환용
 
 
 @dataclass(frozen=True)
@@ -178,6 +178,13 @@ class NurseInfo:
     affiliation_start: date
     affiliation_end: date | None = None
     preceptees: frozenset = frozenset()
+    role: Role = Role.NURSE
+    career_months: int = 0
+    is_preceptor: bool = False
+
+    @property
+    def weekday_only(self) -> bool:
+        return self.role == Role.HEAD_NURSE or self.duty_role == DutyRole.CHARGE
 
     def affiliated(self, d: date) -> bool:
         return self.affiliation_start <= d and (self.affiliation_end is None or d <= self.affiliation_end)
@@ -202,6 +209,7 @@ class Roster:
     wish_offs: dict[object, set[date]] = field(default_factory=dict)
     wish_duties: Cells = field(default_factory=dict)
     before: Cells = field(default_factory=dict)
+    holidays: frozenset[date] = frozenset()
 
     def days(self) -> list[date]:
         n = calendar.monthrange(self.month.year, self.month.month)[1]
