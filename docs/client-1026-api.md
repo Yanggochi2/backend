@@ -126,3 +126,10 @@ AL·ED는 O로 세지 않는다. 중도 소속은 월 목표에 소속 일수 �
 5. 공개 화면은 읽기 전용으로 구성한다. 생성 실패·공유 폐기·관리 토큰 교체 상태를 구분해 표시한다.
 
 이번 작업 범위는 백엔드이며 기존 프론트엔드 main은 아직 이 계약으로 연동되지 않았다.
+
+## 7. 간호사 삭제·엑셀 일괄 등록·잔여 OFF
+
+- `DELETE /wards/me/nurses/{nurseId}`: 수간호사 전용, 204. 목록에서는 즉시 삭제되지만 과거 근무표 보존을 위해 내부적으로 퇴사 처리한다.
+- `GET /wards/me/nurses/import-template.xlsx`: 수간호사 전용 간호사 등록 양식 다운로드.
+- `POST /wards/me/nurses/import.xlsx`: 양식 파일을 `file`로 업로드한다. 성공 시 201 `{createdCount, nurses}`. 한 행이라도 잘못되면 `422 INVALID_NURSE_EXCEL`로 전체 등록을 취소하고 `details.errors`에 행·필드를 반환한다.
+- 근무표 `statistics`의 각 간호사 항목에 `remainingOff`가 추가된다. 계산식은 `max(offTarget - O, 0)`이며 AL·ED는 O로 세지 않는다.

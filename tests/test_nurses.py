@@ -47,6 +47,15 @@ def test_retire():
     assert any(x["id"] == a for x in h.data("GET", "/wards/me/nurses?includeRetired=true"))
 
 
+def test_delete_soft_deletes_and_preserves_row():
+    h = ward_head()
+    [nurse_id] = add_nurses(h, 1)
+    assert h("DELETE", f"/wards/me/nurses/{nurse_id}").status_code == 204
+    assert all(x["id"] != nurse_id for x in h.data("GET", "/wards/me/nurses"))
+    deleted = next(x for x in h.data("GET", "/wards/me/nurses?includeRetired=true") if x["id"] == nurse_id)
+    assert deleted["status"] == "RETIRED" and deleted["affiliationEnd"]
+
+
 def test_other_ward_nurse_is_hidden():
     h, other = ward_head(), ward_head()
     [a] = add_nurses(h, 1)
@@ -67,3 +76,23 @@ def test_year_only_and_preceptor_is_not_rank():
     err(h("GET", "/wards/me/nurses?sort=careerMonths,desc"), 400, "INVALID_SORT")
     result = h.data("PATCH", f"/wards/me/nurses/{ordinary['id']}", {"joinedYear": 2001})["nurse"]
     assert result["joinedYear"] == 2001 and "joinedAt" not in result and result["affiliationStart"] == "2025-01-01"
+
+
+def test_delete_unlinks_only_removed_preceptee():
+    h = ward_head()
+    gone, kept = add_nurses(h, 2, "신입", dutyRole="NEW")
+    pre = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "dutyRole": "PRECEPTOR",
+                                              "preceptorOf": [gone, kept]})
+    assert h("DELETE", f"/wards/me/nurses/{gone}").status_code == 204
+    after = h.data("GET", f"/wards/me/nurses/{pre['id']}")
+    assert after["preceptorOf"] == [kept] and after["isPreceptor"]
+    patched = h.data("PATCH", f"/wards/me/nurses/{pre['id']}", {"skillLevel": 5, "version": after["version"]})
+    assert patched["nurse"]["preceptorOf"] == [kept]
+
+
+def test_delete_keeps_earlier_affiliation_end():
+    h = ward_head()
+    [a] = add_nurses(h, 1, affiliationEnd="2025-06-30")
+    assert h("DELETE", f"/wards/me/nurses/{a}").status_code == 204
+    gone = next(x for x in h.data("GET", "/wards/me/nurses?includeRetired=true") if x["id"] == a)
+    assert gone["affiliationEnd"] == "2025-06-30"

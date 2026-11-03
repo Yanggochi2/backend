@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.business import audit, members, schedules, wards
-from app.business.common import (bad_request, conflict, iso, not_found, page, unprocessable)
+from app.business.common import (bad_request, conflict, iso, not_found, page, today_kst, unprocessable)
 from app.business.members import Member
 from app.domain.model import DutyRole, NurseStatus, Role
 from app.domain.nurse_sort import sorted_nurses
@@ -90,9 +90,38 @@ def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> d
         raise unprocessable("INVALID_END_DATE", "소속 종료일이 시작일보다 빠릅니다")
     n.status, n.affiliation_end = NurseStatus.RETIRED, end
     n.invite_code = n.invite_expires_at = None
+    unlinked = _unlink_preceptee(db, m, n)
     db.flush()
     audit.log(db, m.ward_id, user_id, "NURSE_RETIRED", "NURSE", n.id, None, end)
+    for p, before in unlinked:
+        audit.log(db, m.ward_id, user_id, "NURSE_UPDATED", "NURSE", p.id, before, view(p, True))
     return _result(db, m, n)
+
+
+def _unlink_preceptee(db: Session, m: Member, n: Nurse) -> list[tuple[Nurse, dict]]:
+    """퇴사자를 담당 신입으로 가진 프리셉터의 연결만 끊는다. 퇴사자는 담당 신입으로 지정할 수 없기 때문"""
+    key, unlinked = str(n.id), []
+    for p in db.scalars(select(Nurse).where(Nurse.ward_id == m.ward_id, Nurse.id != n.id)):
+        if key in (p.preceptor_of or []):
+            before = view(p, True)
+            p.preceptor_of = [x for x in p.preceptor_of if x != key]
+            unlinked.append((p, before))
+    return unlinked
+
+
+def remove(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> None:
+    """화면의 삭제 동작. 과거 근무표 참조를 보존하기 위해 실제 행은 퇴사 처리한다."""
+    m = members.require_head(db, user_id)
+    n = _get(db, m, nurse_id)
+    end = max(today_kst(), n.affiliation_start)
+    if n.affiliation_end is not None and n.affiliation_end < end:
+        end = n.affiliation_end  # 이미 정해 둔 더 이른 종료일을 늦추지 않는다
+    retire(db, user_id, nurse_id, end)
+    # 병동 탈퇴와 같은 정책: 종료일 이후 초안 셀은 지우고, 확정본은 바꾸지 않고 기록만 남긴다
+    cleared, confirmed = schedules.clear_after(db, m.ward_id, n.id, end)
+    if cleared or confirmed:
+        audit.log(db, m.ward_id, user_id, "NURSE_SCHEDULE_CLEARED", "NURSE", n.id, None,
+                  f"cleared={cleared} confirmed={confirmed}")
 
 
 def view(n: Nurse, full: bool) -> dict:
