@@ -479,7 +479,9 @@ def _stat(r: Roster, nurse_id, holidays: set[date]) -> dict:
             weekend += 1
         if x.is_work and d in holidays:
             holiday += 1
-    return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": validator.off_target(r, next(n for n in r.nurses if n.id == nurse_id)),
+    off_target = validator.off_target(r, next(n for n in r.nurses if n.id == nurse_id))
+    return {"nurseId": nurse_id, **{str(k): c.get(k, 0) for k in Duty}, "offTarget": off_target,
+            "remainingOff": max(off_target - c.get(Duty.O, 0), 0),
             "weekendWork": weekend, "holidayWork": holiday}
 
 

@@ -8,7 +8,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
 
-from app.business import (access, audit, auth, excel, generations, nurses, rules, sharing,
+from app.business import (access, audit, auth, excel, generations, nurse_excel, nurses, rules, sharing,
                           schedules, wards)
 from app.business.common import ApiException, parse_month
 from app.domain.model import DutyRole, NurseStatus, Role, Severity
@@ -96,6 +96,18 @@ def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, role: Ro
     return nurses.list_(db, user_id, q, role, dutyRole, status, includeRetired, sort, p.page, p.size)
 
 
+@api.get("/wards/me/nurses/import-template.xlsx")
+def nurse_import_template(user_id: UserId, db: DB):
+    data = nurse_excel.template(db, user_id)
+    return Response(data, media_type=nurse_excel.XLSX,
+                    headers={"Content-Disposition": 'attachment; filename="nurse-import-template.xlsx"'})
+
+
+@api.post("/wards/me/nurses/import.xlsx", status_code=201)
+def import_nurses(file: UploadFile, user_id: UserId, db: DB):
+    return _d(nurse_excel.import_nurses(db, user_id, _upload(file)))
+
+
 @api.get("/wards/me/nurses/{nurse_id}")
 def get_nurse(nurse_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(nurses.get(db, user_id, nurse_id))
@@ -105,6 +117,11 @@ def get_nurse(nurse_id: uuid.UUID, user_id: UserId, db: DB):
 def patch_nurse(nurse_id: uuid.UUID, body: s.NursePatch, user_id: UserId, db: DB):
     return _d(nurses.patch(db, user_id, nurse_id, body.model_dump(exclude_unset=True, exclude={"version"}),
                            body.version))
+
+
+@api.delete("/wards/me/nurses/{nurse_id}", status_code=204)
+def delete_nurse(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    nurses.remove(db, user_id, nurse_id)
 
 
 @api.post("/wards/me/nurses/{nurse_id}/retire")
