@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.business import audit, members, schedules, wards
-from app.business.common import (bad_request, conflict, iso, not_found, page, unprocessable)
+from app.business.common import (bad_request, conflict, iso, not_found, page, today_kst, unprocessable)
 from app.business.members import Member
 from app.domain.model import DutyRole, NurseStatus, Role
 from app.domain.nurse_sort import sorted_nurses
@@ -93,6 +93,13 @@ def retire(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, end: date) -> d
     db.flush()
     audit.log(db, m.ward_id, user_id, "NURSE_RETIRED", "NURSE", n.id, None, end)
     return _result(db, m, n)
+
+
+def remove(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> None:
+    """화면의 삭제 동작. 과거 근무표 참조를 보존하기 위해 실제 행은 퇴사 처리한다."""
+    m = members.require_head(db, user_id)
+    n = _get(db, m, nurse_id)
+    retire(db, user_id, nurse_id, max(today_kst(), n.affiliation_start))
 
 
 def view(n: Nurse, full: bool) -> dict:

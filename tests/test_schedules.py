@@ -48,6 +48,20 @@ def test_edit_cells_is_atomic_and_versioned():
     assert r["changedCells"] == 1
 
 
+def test_statistics_include_remaining_off():
+    h, schedule = _ward_with_schedule(extra=1)
+    nurse_id = next(n["id"] for n in schedule["nurses"] if n["role"] != "HEAD_NURSE")
+    before = next(x for x in schedule["statistics"] if x["nurseId"] == nurse_id)
+    assert before["remainingOff"] == before["offTarget"]
+    h.data("PATCH", f"/wards/me/schedules/{schedule['id']}/cells", {
+        "baseVersion": schedule["version"],
+        "changes": [{"nurseId": nurse_id, "date": NEXT.isoformat(), "dutyCode": "O"}],
+    })
+    after = next(x for x in h.data("GET", f"/wards/me/schedules/{schedule['id']}")["statistics"]
+                 if x["nurseId"] == nurse_id)
+    assert after["remainingOff"] == max(after["offTarget"] - 1, 0)
+
+
 def test_out_of_affiliation_cell_is_protected():
     h = ward_head()
     late = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "늦게", "affiliationStart": NEXT.replace(day=15)

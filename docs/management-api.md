@@ -20,7 +20,10 @@
 | 간호사 등록 | POST `/wards/me/nurses` | 수간호사 |
 | 목록·상세 | GET `/wards/me/nurses`, GET `/wards/me/nurses/{nurseId}` | 병동 구성원, 응답 필드 차등 |
 | 간호사 정보 변경 | PATCH `/wards/me/nurses/{nurseId}` | 수간호사 |
+| 간호사 삭제(퇴사 처리) | DELETE `/wards/me/nurses/{nurseId}` | 수간호사 |
 | 퇴사 | POST `/wards/me/nurses/{nurseId}/retire` | 수간호사 |
+| 간호사 엑셀 양식 | GET `/wards/me/nurses/import-template.xlsx` | 수간호사 |
+| 간호사 엑셀 일괄 등록 | POST `/wards/me/nurses/import.xlsx` | 수간호사 |
 | 차지 목록 | GET `/wards/me/charges` | 수간호사 |
 | 차지 지정·해제 | PUT `/wards/me/nurses/{nurseId}/charge` | 수간호사 |
 | 희망 오프 마감 조회 | GET `/wards/me/off-request-deadlines/{YYYY-MM}` | 병동 구성원 |

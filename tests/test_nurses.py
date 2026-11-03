@@ -47,6 +47,15 @@ def test_retire():
     assert any(x["id"] == a for x in h.data("GET", "/wards/me/nurses?includeRetired=true"))
 
 
+def test_delete_soft_deletes_and_preserves_row():
+    h = ward_head()
+    [nurse_id] = add_nurses(h, 1)
+    assert h("DELETE", f"/wards/me/nurses/{nurse_id}").status_code == 204
+    assert all(x["id"] != nurse_id for x in h.data("GET", "/wards/me/nurses"))
+    deleted = next(x for x in h.data("GET", "/wards/me/nurses?includeRetired=true") if x["id"] == nurse_id)
+    assert deleted["status"] == "RETIRED" and deleted["affiliationEnd"]
+
+
 def test_other_ward_nurse_is_hidden():
     h, other = ward_head(), ward_head()
     [a] = add_nurses(h, 1)
