@@ -82,20 +82,11 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
 
 def import_nurses(db: Session, user_id: uuid.UUID, data: bytes) -> dict:
     members.require_head(db, user_id)
-    ws = _open(data)
-    columns = _columns(ws)
-    parsed: list[tuple[int, dict]] = []
-    errors = []
-    for row in ws.iter_rows(min_row=2):
-        values = {header: row[index - 1].value for header, index in columns.items()}
-        if not any(value not in (None, "") for value in values.values()):
-            continue
-        if len(parsed) >= MAX_ROWS:
-            raise unprocessable("INVALID_NURSE_EXCEL", f"최대 {MAX_ROWS}명까지 등록할 수 있습니다")
-        try:
-            parsed.append((row[0].row, _parse(values)))
-        except RowError as error:
-            errors.append({"row": row[0].row, "field": error.field, "reason": error.message})
+    wb = _open(data)
+    try:
+        parsed, errors = _read(wb.worksheets[0])
+    finally:
+        wb.close()
     if errors:
         raise unprocessable("INVALID_NURSE_EXCEL", "간호사 등록 양식의 값을 확인해 주세요", {"errors": errors})
     if not parsed:
@@ -112,8 +103,40 @@ def import_nurses(db: Session, user_id: uuid.UUID, data: bytes) -> dict:
     return {"createdCount": len(created), "nurses": created}
 
 
-def _columns(ws) -> dict[str, int]:
-    headers = [str(cell.value).strip() if cell.value is not None else "" for cell in ws[1]]
+def _read(ws) -> tuple[list[tuple[int, dict]], list[dict]]:
+    """빈 행·오류 행을 포함해 검사한 모든 데이터 행이 MAX_ROWS를 넘으면 더 읽지 않는다."""
+    rows = _rows(ws)
+    columns = _columns(next(rows, ()))
+    parsed: list[tuple[int, dict]] = []
+    errors = []
+    for row_number, row in enumerate(rows, start=2):
+        if row_number > MAX_ROWS + 1:
+            raise unprocessable("INVALID_NURSE_EXCEL", f"최대 {MAX_ROWS}명까지 등록할 수 있습니다")
+        values = {header: row[index - 1] if index <= len(row) else None for header, index in columns.items()}
+        if not any(value not in (None, "") for value in values.values()):
+            continue
+        try:
+            parsed.append((row_number, _parse(values)))
+        except RowError as error:
+            errors.append({"row": row_number, "field": error.field, "reason": error.message})
+    return parsed, errors
+
+
+def _rows(ws):
+    """read-only 모드는 행을 순회하면서 XML을 읽으므로, 읽기 실패도 양식 오류로 돌려준다."""
+    iterator = ws.iter_rows(values_only=True)
+    while True:
+        try:
+            row = next(iterator)
+        except StopIteration:
+            return
+        except Exception:
+            raise unprocessable("INVALID_NURSE_EXCEL", "엑셀 형식을 읽을 수 없습니다") from None
+        yield row
+
+
+def _columns(header_row) -> dict[str, int]:
+    headers = [str(value).strip() if value is not None else "" for value in header_row]
     present = [header for header in headers if header]
     missing = sorted(set(HEADERS) - set(present))
     unexpected = sorted(set(present) - set(HEADERS))
@@ -173,7 +196,7 @@ def _integer(value, field: str) -> int:
         raise RowError(field, "정수여야 합니다")
     if isinstance(value, int) or isinstance(value, float) and value.is_integer():
         return int(value)
-    if isinstance(value, str) and value.strip().isdigit():
+    if isinstance(value, str) and value.strip().isdecimal():
         return int(value.strip())
     raise RowError(field, "정수여야 합니다")
 
@@ -204,9 +227,15 @@ def _date(value, field: str, optional: bool = False) -> date | None:
 
 def _open(data: bytes):
     try:
-        return load_workbook(io.BytesIO(data), data_only=False).worksheets[0]
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=False)
     except Exception:
         raise unprocessable("INVALID_NURSE_EXCEL", "엑셀 형식을 읽을 수 없습니다") from None
+    if not wb.worksheets:
+        wb.close()
+        raise unprocessable("INVALID_NURSE_EXCEL", "엑셀 형식을 읽을 수 없습니다")
+    # 파일의 dimension 기록을 믿지 않고 실제 행을 읽는다 (행 수 제한은 _read에서 건다)
+    wb.worksheets[0].reset_dimensions()
+    return wb
 
 
 def _save(wb: Workbook) -> bytes:

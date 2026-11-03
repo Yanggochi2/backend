@@ -105,3 +105,38 @@ def test_unused_offs_of_confirmed_month_carry_over():
             assert x["offCarry"] == left[x["nurseId"]] > 0 and x["offTarget"] == min(31, base + x["offCarry"])
         else:
             assert x["offCarry"] == 0
+
+
+def _assignment_count(schedule_id, nurse_id) -> int:
+    import uuid
+
+    from sqlalchemy import func, select
+
+    from app.persistence.db import SessionLocal
+    from app.persistence.models import Assignment
+    with SessionLocal() as db:
+        return db.scalar(select(func.count()).select_from(Assignment).where(
+            Assignment.schedule_id == uuid.UUID(schedule_id), Assignment.nurse_id == uuid.UUID(nurse_id)))
+
+
+def _staff(h, s) -> str:
+    return next(c["nurseId"] for c in s["cells"]
+                if c["dutyCode"] and c["nurseId"] != h.workspace["headNurseId"])
+
+
+def test_deleting_nurse_clears_draft_cells_after_end_but_keeps_confirmed():
+    h, s = _ward_with_schedule()
+    s = fill_rotation(h, s)
+    nurse = _staff(h, s)
+    assert _assignment_count(s["id"], nurse)
+    assert h("DELETE", f"/wards/me/nurses/{nurse}").status_code == 204
+    assert _assignment_count(s["id"], nurse) == 0
+    assert h.data("GET", f"/wards/me/schedules/{s['id']}")["version"] > s["version"]
+
+    h, s = _ward_with_schedule()
+    s = fill_rotation(h, s)
+    confirm_schedule(h, s)
+    nurse = _staff(h, s)
+    count = _assignment_count(s["id"], nurse)
+    assert h("DELETE", f"/wards/me/nurses/{nurse}").status_code == 204
+    assert _assignment_count(s["id"], nurse) == count > 0

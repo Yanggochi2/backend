@@ -13,6 +13,12 @@ def _template(h):
     return load_workbook(io.BytesIO(response.content))
 
 
+def _put(sheet, row: int, values) -> None:
+    """양식에 미리 서식이 잡힌 2~501행에 사용자가 입력하듯 값을 쓴다"""
+    for column, value in enumerate(values, start=1):
+        sheet.cell(row, column, value)
+
+
 def _bytes(workbook) -> bytes:
     output = io.BytesIO()
     workbook.save(output)
@@ -25,8 +31,8 @@ def test_download_template_and_import_nurses_atomically():
     sheet = workbook["간호사 등록"]
     assert [cell.value for cell in sheet[1]] == [
         "이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일"]
-    sheet.append(["김차지", "CHARGE", "ACTIVE", 2020, "N", 72, 5, "2025-01-01", None])
-    sheet.append(["이프리", "GENERAL", "ACTIVE", 2021, "Y", 60, 4, "2025-01-01", None])
+    _put(sheet, 2, ["김차지", "CHARGE", "ACTIVE", 2020, "N", 72, 5, "2025-01-01", None])
+    _put(sheet, 3, ["이프리", "GENERAL", "ACTIVE", 2021, "Y", 60, 4, "2025-01-01", None])
 
     result = h.data("POST", "/wards/me/nurses/import.xlsx",
                     files={"file": ("nurses.xlsx", _bytes(workbook))}, status=201)
@@ -40,8 +46,8 @@ def test_invalid_import_rolls_back_all_rows():
     h = ward_head()
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
-    sheet.append(["등록되면안됨", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
-    sheet.append(["잘못된행", "GENERAL", "ACTIVE", 2020, "N", 12, 9, "2025-01-01", None])
+    _put(sheet, 2, ["등록되면안됨", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
+    _put(sheet, 3, ["잘못된행", "GENERAL", "ACTIVE", 2020, "N", 12, 9, "2025-01-01", None])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
     assert details["errors"][0]["field"] == "숙련도"
@@ -53,3 +59,23 @@ def test_nurse_excel_is_head_only_and_rejects_invalid_file():
     h = ward_head()
     err(h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("bad.xlsx", b"not xlsx")}),
         422, "INVALID_NURSE_EXCEL")
+
+
+def test_non_ascii_digit_text_is_row_error():
+    h = ward_head()
+    workbook = _template(h)
+    _put(workbook["간호사 등록"], 2, ["윗첨자", "GENERAL", "ACTIVE", 2020, "N", "²", 3, "2025-01-01", None])
+    response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
+    details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
+    assert details["errors"] == [{"row": 2, "field": "경력개월", "reason": "정수여야 합니다"}]
+
+
+def test_row_limit_counts_blank_rows():
+    h = ward_head()
+    workbook = _template(h)
+    sheet = workbook["간호사 등록"]
+    _put(sheet, 2, ["앞행", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
+    _put(sheet, 3 + 500, ["멀리", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
+    response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
+    err(response, 422, "INVALID_NURSE_EXCEL")
+    assert not h.data("GET", "/wards/me/nurses?q=앞행")
