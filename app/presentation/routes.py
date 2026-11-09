@@ -1,18 +1,20 @@
 """
-API 라우트 (/api/v1). 로그인 없이 단일 병동 관리자 화면에서 사용한다.
+API 라우트 (/api/v1). 병동 리소스는 /wards/me 아래에 두고 로그인한 수간호사의 병동이 대상이다.
 컨트롤러는 요청·응답 변환만 하고 로직은 business 계층에 둔다. 단일 리소스는 {data}, 목록은 {data, meta}
 """
 import uuid
 from datetime import UTC, date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query, Response, UploadFile
+from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
 
-from app.business import audit, excel, generations, nurses, rules, schedules, wards
+from app.business import (access, audit, auth, excel, generations, nurse_excel, nurses, rules, sharing,
+                          schedules, wards)
 from app.business.common import ApiException, parse_month
-from app.domain.model import DutyRole, NurseRank, NurseStatus, Role, Severity
+from app.domain.model import DutyRole, NurseStatus, Role, Severity
 from app.presentation import schemas as s
-from app.presentation.deps import DB, PREFIX, Page, TxRoute, UserId
+from app.presentation.deps import (ACCESS, REFRESH, AccountId, DB, PREFIX, Page, TxRoute, UserId,
+                                   clear_auth_cookies, set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
 MAX_UPLOAD = 10 * 1024 * 1024  # 🔶 권장 10MB
@@ -34,6 +36,48 @@ def _utc(dt: datetime | None) -> datetime | None:
     return dt.astimezone(UTC).replace(tzinfo=None) if dt and dt.tzinfo else dt
 
 
+# --- 수간호사 계정 인증
+@api.post("/auth/signup", status_code=201)
+def signup(body: s.Signup, db: DB, request: Request, response: Response):
+    user, tokens = auth.signup(db, body.name, body.email, body.password, request.client.host if request.client else "")
+    set_auth_cookies(response, tokens)
+    return _d(user)
+
+
+@api.post("/auth/login")
+def login(body: s.Login, db: DB, response: Response):
+    user, tokens = auth.login(db, body.email, body.password)
+    set_auth_cookies(response, tokens)
+    return _d(user)
+
+
+@api.post("/auth/refresh")
+def refresh(request: Request, db: DB, response: Response):
+    user, tokens = auth.refresh(db, request.cookies.get(REFRESH))
+    set_auth_cookies(response, tokens)
+    return _d(user)
+
+
+@api.post("/auth/logout", status_code=204)
+def logout(db: DB, request: Request, response: Response):
+    auth.logout(db, request.cookies.get(ACCESS), request.cookies.get(REFRESH))
+    clear_auth_cookies(response)
+
+
+@api.get("/me")
+def me(account_id: AccountId, db: DB):
+    return _d(auth.me(db, account_id))
+
+
+@api.delete("/me", status_code=204)
+def withdraw(body: s.Withdraw, account_id: AccountId, db: DB, response: Response):
+    auth.withdraw(db, account_id, body.password)
+    clear_auth_cookies(response)
+
+
+# --- 병동
+
+
 @api.get("/wards/me")
 def my_ward(user_id: UserId, db: DB):
     return _d(wards.get(db, user_id))
@@ -46,11 +90,22 @@ def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
 
 
 @api.get("/wards/me/nurses")
-def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, rank: NurseRank | None = None,
-                role: Role | None = None, dutyRole: DutyRole | None = None,
-                status: NurseStatus | None = None,
+def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, role: Role | None = None,
+                dutyRole: DutyRole | None = None, status: NurseStatus | None = None,  # noqa: N803
                 includeRetired: bool = False, sort: str | None = None):  # noqa: N803
-    return nurses.list_(db, user_id, q, rank, role, dutyRole, status, includeRetired, sort, p.page, p.size)
+    return nurses.list_(db, user_id, q, role, dutyRole, status, includeRetired, sort, p.page, p.size)
+
+
+@api.get("/wards/me/nurses/import-template.xlsx")
+def nurse_import_template(user_id: UserId, db: DB):
+    data = nurse_excel.template(db, user_id)
+    return Response(data, media_type=nurse_excel.XLSX,
+                    headers={"Content-Disposition": 'attachment; filename="nurse-import-template.xlsx"'})
+
+
+@api.post("/wards/me/nurses/import.xlsx", status_code=201)
+def import_nurses(file: UploadFile, user_id: UserId, db: DB):
+    return _d(nurse_excel.import_nurses(db, user_id, _upload(file)))
 
 
 @api.get("/wards/me/nurses/{nurse_id}")
@@ -62,6 +117,11 @@ def get_nurse(nurse_id: uuid.UUID, user_id: UserId, db: DB):
 def patch_nurse(nurse_id: uuid.UUID, body: s.NursePatch, user_id: UserId, db: DB):
     return _d(nurses.patch(db, user_id, nurse_id, body.model_dump(exclude_unset=True, exclude={"version"}),
                            body.version))
+
+
+@api.delete("/wards/me/nurses/{nurse_id}", status_code=204)
+def delete_nurse(nurse_id: uuid.UUID, user_id: UserId, db: DB):
+    nurses.remove(db, user_id, nurse_id)
 
 
 @api.post("/wards/me/nurses/{nurse_id}/retire")
@@ -113,23 +173,13 @@ def create_schedule(body: s.ScheduleCreate, user_id: UserId, db: DB):
 
 
 @api.get("/wards/me/schedules")
-def schedule_by_month(yearMonth: str, user_id: UserId, db: DB):  # noqa: N803
-    return _d(schedules.get_by_month(db, user_id, yearMonth))
+def schedule_by_month(yearMonth: str, user_id: UserId, db: DB, sort: str | None = None):  # noqa: N803
+    return _d(schedules.get_by_month(db, user_id, yearMonth, sort))
 
 
 @api.get("/wards/me/schedules/{schedule_id}")
-def get_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(schedules.get(db, user_id, schedule_id))
-
-
-@api.post("/wards/me/schedules/{schedule_id}/share")
-def share_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB):
-    return _d(schedules.create_share(db, user_id, schedule_id))
-
-
-@api.get("/public/schedules/{token}")
-def shared_schedule(token: str, db: DB):
-    return _d(schedules.public_share(db, token))
+def get_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB, sort: str | None = None):
+    return _d(schedules.get(db, user_id, schedule_id, sort))
 
 
 @api.patch("/wards/me/schedules/{schedule_id}/cells")
@@ -254,3 +304,25 @@ def audit_logs(user_id: UserId, db: DB, p: Page, frm: datetime | None = Query(No
                to: datetime | None = None, actorId: uuid.UUID | None = None,  # noqa: N803
                actionType: str | None = None):  # noqa: N803
     return audit.search(db, user_id, _utc(frm), _utc(to), actorId, actionType, p.page, p.size)
+
+
+@api.post("/workspaces", status_code=201)
+def create_workspace(body: s.WorkspaceCreate, account_id: AccountId, db: DB):
+    return _d(access.create(db, account_id, body.model_dump()))
+
+
+@api.post("/wards/me/schedules/{schedule_id}/share-link", status_code=201)
+def issue_share(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(sharing.issue(db, user_id, schedule_id))
+
+
+@api.delete("/wards/me/schedules/{schedule_id}/share-link", status_code=204)
+def revoke_share(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    sharing.revoke(db, user_id, schedule_id)
+
+
+@api.get("/shared/schedules/{token}")
+def shared_schedule(token: str, db: DB, response: Response, sort: str | None = None):
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return _d(sharing.get(db, token, sort))

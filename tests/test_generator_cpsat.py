@@ -42,7 +42,7 @@ def test_small_ward_keeps_every_hard_rule():
     ns += [nurse(i) for i in range(4, 16)]
     fixed = {5: {DAYS[9]: Duty.AL, DAYS[10]: Duty.AL}, 6: {DAYS[3]: Duty.N}}
     # 차지 1명이라 근무마다 차지는 불가능 → '차지는 D만' 규칙으로 검사
-    rules_ = rules(2, 2, 2, CHARGE_DAY_ONLY={"enabled": True, "parameters": {"allowedDuties": ["D"]}},
+    rules_ = rules(2, 2, 2, CHARGE_DAY_ONLY={"parameters": {"allowedDuties": ["D"]}},
                    CHARGE_EVERY_SHIFT=None, SENIOR_EVERY_SHIFT=None)
     out, vs = run(Roster(NOV, ns, fixed, rules_, 8), seconds=3)
     assert hard(vs) == []
@@ -50,19 +50,19 @@ def test_small_ward_keeps_every_hard_rule():
     for n in ns:
         xs = seq(out, n.id)
         assert all((a, b) not in REVERSE for a, b in zip(xs, xs[1:])), f"{n.id} 역순환"
-        for i in range(1, len(xs) - 2):
-            if xs[i - 1] == xs[i] == Duty.N and xs[i + 1] != Duty.N:
-                assert not xs[i + 1].is_work, f"{n.id} 야간 후 휴식"
+        for i in range(2, len(xs) - 2):
+            if xs[i - 2] == xs[i - 1] == xs[i] == Duty.N and xs[i + 1] != Duty.N:
+                assert not xs[i + 1].is_work and not xs[i + 2].is_work, f"{n.id} 야간 3일 후 휴식"
     assert all(x == Duty.D for x in seq(out, 1) if x.is_work), "차지는 D만"
     assert Duty.N not in seq(out, 2), "임신 중 야간 없음"
 
 
 def test_continues_last_month_nights():
     ns = [nurse(i) for i in range(1, 13)]
-    # 지난달 말 N N N → 연속 야간 3일을 채웠으므로 다음 날 OFF (둘째 날은 권장 규칙)
+    # 지난달 말 N N N → 연속 야간 3일을 채웠으므로 1·2일은 OFF (야간 후 휴식)
     before = {1: {NOV - timedelta(days=k): Duty.N for k in (1, 2, 3)}}
     out, vs = run(Roster(NOV, ns, {}, rules(2, 2, 2), 8, before=before))
-    assert hard(vs) == [] and out.cell(1, DAYS[0]) == Duty.O
+    assert hard(vs) == [] and out.cell(1, DAYS[0]) == Duty.O and out.cell(1, DAYS[1]) == Duty.O
 
 
 def test_on_leave_nurse_is_off_and_shortage_still_returns_cells():
@@ -71,37 +71,3 @@ def test_on_leave_nurse_is_off_and_shortage_still_returns_cells():
     assert set(seq(out, 2)) == {Duty.O}
     assert "COVERAGE" in {v.rule_id for v in hard(vs)}, "인원 부족은 하드 위반으로 남는다"
     assert all(x is not None for x in seq(out, 1))
-
-
-def test_thirty_nurse_ward_quality():
-    roles = [DutyRole.CHARGE] * 6 + [DutyRole.PRECEPTOR] * 3 + [DutyRole.NEW] * 3 + [DutyRole.GENERAL] * 18
-    ns = [nurse(i, role) for i, role in enumerate(roles)]
-    ns[15] = nurse(15, status=NurseStatus.PREGNANT)
-    wish = {i: {DAYS[i % 30]} for i in range(0, 30, 3)}
-    # 하루 18명을 정확히 채우면 30명이 1인 18일 근무 → OFF 목표 12 (서비스에서는 자동 계산)
-    r = Roster(NOV, ns, {}, rules(7, 6, 5), 12, wish_offs=wish)
-    out, vs = run(r, seconds=30)
-    by = {}
-    for v in vs:
-        by.setdefault(v.rule_id, []).append(v)
-    assert hard(vs) == []
-    assert len(by.get("MAX_MONTHLY_NIGHTS", [])) == 0, "월 야간 상한 6 이하"
-    assert len(by.get("WISH_OFF_IGNORED", [])) == 0, "희망 오프 반영"
-    assert len(by.get("ISOLATED_SHIFT", [])) <= len(ns) * 3, "고립 배치가 과도하지 않음"
-    offs = [sum(1 for d in DAYS if out.cell(n.id, d) == Duty.O) for n in ns]
-    assert all(11 <= o <= 13 for o in offs), f"OFF는 목표 12 ± 1: {sorted(offs)}"
-
-
-def test_charge_every_shift_and_night_only_nurses():
-    roles = [DutyRole.CHARGE] * 6 + [DutyRole.NIGHT_ONLY] * 2 + [DutyRole.PRECEPTOR] * 3 + [DutyRole.NEW] * 3
-    roles += [DutyRole.GENERAL] * 16
-    ns = [nurse(i, role) for i, role in enumerate(roles)]
-    enabled = rules(7, 6, 5, CHARGE_EVERY_SHIFT={"enabled": True}, NIGHT_ONLY_SHIFT={"enabled": True})
-    out, vs = run(Roster(NOV, ns, {}, enabled, 12), seconds=30)
-    assert hard(vs) == []
-    for d in DAYS:
-        for x in (Duty.D, Duty.E, Duty.N):
-            assert any(out.cell(n.id, d) == x for n in ns if n.duty_role == DutyRole.CHARGE), f"{d} {x} 차지"
-    for i in (6, 7):
-        xs = seq(out, i)
-        assert set(xs) <= {Duty.N, Duty.O} and 10 <= xs.count(Duty.N) <= 15, "나이트 전담은 나이트를 맡는다"

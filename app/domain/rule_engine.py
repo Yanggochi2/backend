@@ -14,6 +14,11 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
         if rules.enabled(code):
             out.append(Violation(rules.severity_for(code), code, n.id, d, x, message))
 
+    if (n.weekday_only and n.status != NurseStatus.ON_LEAVE and n.affiliated(d)
+            and x is not None and x not in (Duty.AL, Duty.ED)):
+        expected = Duty.O if d.weekday() >= 5 or d in r.holidays else Duty.D
+        if x != expected:
+            add("WEEKDAY_DAY_ONLY", "수간호사·차지는 평일 D, 주말·공휴일 O 근무입니다")
     if x is not None and not n.affiliated(d):
         add("OUT_OF_AFFILIATION", f"{n.name} 소속 기간 밖 배정")
     if n.duty_role == DutyRole.CHARGE and x and x.is_work and x not in rules.parameter("CHARGE_DAY_ONLY", "allowedDuties"):
@@ -33,13 +38,21 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
         if count > limit:
             add(code, f"연속 근무 {count}일 (최대 {limit})")
     one = timedelta(days=1)
-    p1, p2 = (r.cell(n.id, d - k * one) for k in (1, 2))
-    if (p1, x) in REVERSE:
+    k = rules.parameter("NIGHT_REST", "nights")
+    p = [r.cell(n.id, d - i * one) for i in range(1, max(k, 3) + 2)]  # p[0] = 전날
+    p1, p2, p3 = p[0], p[1], p[2]
+    if (p1, Duty.D if x == Duty.ED else x) in REVERSE:
         add("NIGHT_TO_DAY", f"역순환 {p1}→{x} (근무 사이 휴식 11시간 미만)")
-    if x in (Duty.D, Duty.E) and p1 == Duty.N:
-        add("NIGHT_REST", "나이트 후 OFF 1일 필요")
-    if x is not None and x.is_work and p1 != Duty.N and p2 == Duty.N:
-        add("NIGHT_REST_2D", "나이트 후 OFF 2일 권장")
+    # 야간 k일(기본 3) 연속 후 48시간(OFF 2일) 휴식. 지난달 말 나이트와 이어서 센다
+    if x is not None and x.is_work and ((x != Duty.N and all(v == Duty.N for v in p[:k]))
+                                        or (p1 != Duty.N and all(v == Duty.N for v in p[1:k + 1]))):
+        add("NIGHT_REST", f"야간 {k}일 연속 후 OFF 2일 필요")
+    # 퐁당퐁당: 매일 다른 근무(D E N) 또는 근무·휴무 4일 교대(W O W O)
+    if x is not None and p1 is not None and p2 is not None:
+        if x.is_work and p1.is_work and p2.is_work and p2 != p1 != x:
+            add("PING_PONG", f"매일 다른 근무 {p2}→{p1}→{x}")
+        if p3 is not None and p3.is_work != p2.is_work != p1.is_work != x.is_work:
+            add("PING_PONG", f"근무·휴무 교대 {p3} {p2} {p1} {x}")
     if n.duty_role == DutyRole.NIGHT_ONLY and x in (Duty.D, Duty.E):
         add("NIGHT_ONLY_SHIFT", "나이트 전담은 N만 배정 가능")
     if n.duty_role == DutyRole.NEW and x == Duty.N:

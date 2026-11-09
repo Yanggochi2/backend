@@ -1,74 +1,90 @@
-# 병동 근무표 백엔드
+# 병동 근무표 백엔드 — 10/26 회의 반영
 
-FastAPI와 OR-Tools CP-SAT으로 구현한 단일 병동 관리자용 근무표 서비스다. 로그인과 역할별 화면 없이 병동 관리자 화면에서 간호사, 근무 규칙, 공휴일, 근무표와 자동 생성을 관리한다.
+FastAPI / Python 3.12 / SQLAlchemy / PostgreSQL·SQLite / OR-Tools CP-SAT.
+수간호사는 **자신의 계정으로 로그인해 편집**하고, 일반 간호사는 **공유 링크로 확정본만 조회**한다.
+
+- [작업 계획·가정·검증 결과](docs/client-1026-plan.md)
+- [변경 API와 프론트엔드 연동](docs/client-1026-api.md)
+- 이전 인증·신청 명세는 현재 API에 적용되지 않는다. 실행 서버의 `/docs`가 현재 계약이다.
 
 ## 실행
 
 ```bash
-uv sync
-uv run python -m app.seed
+uv sync --frozen
 uv run uvicorn app.main:app --reload
+# 별도 터미널: 독립된 데모 병동 28명 + 이번 달 초안
+DEMO_HEAD_PASSWORD='<실행 시 지정할 비밀번호>' uv run python -m app.seed
 ```
 
-기본 API 경로는 `/api/v1`, Swagger 문서는 `http://localhost:8000/docs`다. `DATABASE_URL`이 없으면 `sqlite:///./nurs-local.db`를 사용한다. 기존 데이터베이스는 서버 시작 시 직급, 입사 연도, 프리셉터와 공유 링크 열을 자동으로 보완한다.
+기본 DB는 `sqlite:///./nurs-local.db`. `DATABASE_URL`로 변경한다.
+데모는 수간호사 1명, 차지 2명, 일반 25명이며 프리셉터는 일반 간호사 중 5~6년차 2명이다.
+seed 출력의 데모 수간호사 이메일과 실행 시 `DEMO_HEAD_PASSWORD`로 지정한 비밀번호로 로그인한다.
+비밀번호는 소스·DB 응답·seed 출력에 원문으로 저장하지 않는다.
+데모 재실행은 인원을 중복 등록하지 않으며 근무표를 자동 확정하지 않는다.
 
-## 초기 데이터
-
-`python -m app.seed`는 한 병동과 간호사 28명을 만든다.
-
-- 수간호사 1명
-- 차지 간호사 2명
-- 일반 간호사 25명
-- 프리셉터는 5~6년 차 일반 간호사에게만 별도 속성으로 지정
-- 직급과 경력을 분리해 25년 차 일반 간호사와 23년 차 차지 간호사를 포함
-
-초기 필요 인원 D 6명, E 5명, N 4명은 클라이언트 확인 전 임시값이다. 확정 질문과 현재 적용 규칙은 [도메인 규칙 및 Q&A](docs/domain-rules-and-client-qa.md)에 기록했다.
-
-## 주요 API
-
-모든 관리자 API는 로그인 없이 사용한다. 내부 감사 로그에는 시드로 생성한 병동 관리자 ID를 작업 주체로 기록한다.
-
-- `GET /wards/me`
-- `GET|POST /wards/me/nurses`
-- `GET|PATCH /wards/me/nurses/{nurseId}`
-- `POST /wards/me/nurses/{nurseId}/retire`
-- `GET|PATCH /wards/me/rules...`
-- `GET|PUT|DELETE /wards/me/holidays...`
-- `GET|POST /wards/me/schedules...`
-- `POST /wards/me/schedules/{scheduleId}/generations`
-- `POST /wards/me/schedules/{scheduleId}/share`
-- `GET /public/schedules/{token}`
-
-확정된 근무표만 공유할 수 있다. 공유 API를 다시 호출하면 이전 링크는 만료되며, 공개 API의 모든 셀은 읽기 전용이다.
-
-로그인, 회원가입, 병동 가입 승인, 일반 간호사 온라인 오프 신청, 개인 알림 API는 제거했다. 연차와 오프 요청 테이블은 과거 데이터 호환을 위해 남아 있지만 외부 API에서는 접근할 수 없다.
-
-## 간호사 모델
-
-외부 API는 다음 필드를 사용한다.
-
-- `rank`: `HEAD_NURSE | CHARGE_NURSE | STAFF_NURSE`
-- `hireYear`: 입사 연도
-- `isPreceptor`: 프리셉터 역할 속성
-- `status`, `skillLevel`, `affiliationStart`, `affiliationEnd`, `preceptorOf`
-
-수간호사는 병동에 정확히 1명만 유지한다. 프리셉터는 현재 연도 기준 입사 후 5~6년인 일반 간호사만 지정할 수 있다. 차지 간호사가 2명이 아니면 간호사 변경 응답의 `warnings`에 표시한다.
-
-## 규칙 엔진
-
-규칙의 활성 여부, 강도와 파라미터를 검증기와 생성기가 함께 사용한다. 현재 확정되지 않은 차지 조별 배치, 고연차 조별 배치, 프리셉터 동반 규칙은 기본 비활성이다.
-
-- 최대 연속 근무 기본값 5일
-- 최대 연속 N 기본값 3일
-- N 블록 종료 뒤 다음 날 OFF는 하드 규칙
-- 두 번째 OFF는 소프트 규칙
-- 임신 중 N 금지
-- D/E/N 필요 인원은 `COVERAGE.parameters`로 관리
-
-## 테스트
+Docker 실행:
 
 ```bash
-uv run pytest
+cp .env.example .env
+docker compose up --build -d
 ```
 
-테스트는 임시 SQLite 데이터베이스에 매번 28명 시드를 구성하고, 제거된 API, 간호사 구조, 파라미터 규칙, 자동 생성과 공개 공유 링크를 검증한다.
+`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `API_PORT`는 `.env.example`을 참고한다.
+
+## 현재 기능
+
+- 수간호사 계정: 회원가입·로그인·세션 갱신·로그아웃을 제공하고 HttpOnly 쿠키와 CSRF 토큰으로 보호한다.
+- 병동 개설: 로그인 후 `POST /api/v1/workspaces`. 해당 계정이 병동의 수간호사가 된다.
+- 관리 API: `/api/v1/wards/me/...`. 로그인한 수간호사만 접근할 수 있다.
+- 일반 간호사 가입·계정 연결·온라인 신청·승인·오프 마감·개인 알림 API는 제공하지 않는다.
+- 공유: 확정/보관된 한 달의 조회 링크 발급·교체·폐기. 링크 교체/폐기/확정 취소 후 이전 링크는 무효.
+- 간호사 등록/수정: `joinedYear`, `affiliationStart`, `careerMonths`, `dutyRole`, `isPreceptor`, `preceptorOf`.
+- 정렬: 기본 `proficiency`(수간호사→차지→일반, 그룹 안 경력 내림차순), `name` 두 개.
+- 근무표 조회 응답: 월간 기본값 `defaultView: month`, 전체 월의 셀.
+- 수동 편집·확정·엑셀·감사 로그·편집 잠금·낙관적 버전 충돌·자동 생성.
+
+## 생성 규칙
+
+- 일반 간호사 월 **O = 주말 날짜 ∪ 등록된 공휴일 날짜의 수 + 1**. 인력이 남는다는 이유로 O를 늘리지 않는다.
+- 수간호사·차지: 평일 D, 주말/공휴일 O. 고정 AL/ED는 보존. 주5일 기준이므로 별도 추가 O를 강제하지 않는다.
+- 프리셉터는 직급이 아니다. `isPreceptor`와 `preceptorOf`로 관리하며 정렬상 상위 직급으로 취급하지 않는다.
+- D/E/N 최소 인원을 충족하고 E/N 초과를 줄인다. E와 N은 각각 공정성 목적함수로 분배하며 고정 세트로 묶지 않는다.
+- 연속 근무·야간·역순환·이전 달 말 근무·임신·신입 야간 지원 제약을 유지한다.
+- AL(연차), ED(교육·학회), 요청한 고정 셀은 재생성해도 유지한다. AL/ED는 O 목표에 포함하지 않는다.
+- 해를 못 찾거나 하드 위반이 남으면 `NO_SOLUTION`, 충돌 내역과 부분 결과를 반환하며 저장된 근무표는 바꾸지 않는다.
+- 생성은 요청 내 동기 실행(기본 30초, 최대 60초). 202는 작업 접수 상태가 아니라 완료된 작업 결과다. 중단은 완료 후 `JOB_ALREADY_FINISHED`.
+- 최적화를 시간 내 완료하지 못하면 해 품질이나 공정성 최적값은 보장하지 않는다. 성공 판정 전 동일 검증기로 하드 규칙을 재확인한다.
+
+공휴일은 기존 양력 기본 목록과 병동 보정값을 사용한다. **설·추석·대체·임시공휴일은 병동 보정 API로 입력해야 한다.**
+최소 인원/정확한 정원, 수간호사의 필요 인원 포함 여부, 중도 소속의 O 비례 계산 등은 [확인 목록](docs/client-1026-plan.md)에 기록했다.
+
+## 기존 DB 전환
+
+서버 시작 시 공유 테이블을 만들고 `is_preceptor` 컬럼을 추가한다. 기존 입사일 원본·근무표·계정/신청 이력은 삭제하지 않는다. PRECEPTOR를 GENERAL + is_preceptor로 전환한다.
+
+기존 병동의 회의 규칙 전환은 운영자가 명시적으로 실행한다:
+
+```bash
+uv run python -m app.manage apply-client-rules <병동_UUID>
+```
+
+명령은 차지/고연차/월 O/평일 근무 관련 설정만 새 기본값으로 전환한다. 기존 확정 근무표는 바꾸지 않는다. 과거 수동 `offTarget` 값도 보존하므로 자동 기준으로 돌아가려면 해당 월 `targetCount: null`을 적용한다.
+예전 편집 링크 방식으로 만들어진 병동은 실제 수간호사 계정을 먼저 가입시킨 후 다음 명령으로 연결한다:
+
+```bash
+uv run python -m app.manage link-head-account <병동_UUID> <수간호사_계정_이메일>
+```
+
+활성 상태의 실제 로그인 계정이면서 다른 재직 소속이 없어야 하고, 병동에는 교체 가능한 기존 수간호사 행이 정확히 한 명이어야 한다. 런타임 관리 API의 수간호사 권한 검사는 이 명령으로 우회할 수 없다.
+공유 토큰은 DB에 해시만 저장하며 링크 발급 응답을 멱등성 캐시에 남기지 않는다.
+
+## 검증
+
+```bash
+uv run pytest -q
+```
+
+28명 자동 편성·등록→생성→확정→공유 통합 흐름, 권한 분리/병동 격리, 링크 폐기, O 계산, 고정 셀, 월 경계, 데이터 전환, 기존 엑셀/잠금/버전 검사를 포함한다.
+일반 간호사 가입/신청/알림 테스트는 폐지 API의 404 검사와 수간호사 계정·공유 계약 검사로 대체했다.
+
+기존 프론트엔드 main은 쿠키 로그인과 `joinedAt`을 사용한다. 이 백엔드 변경과 함께 새 API에 연동해야 한다. 이 작업에서는 프론트엔드 소스를 수정하지 않았다.

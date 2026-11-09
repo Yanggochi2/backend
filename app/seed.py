@@ -1,106 +1,78 @@
-"""로그인 없는 데모를 위한 단일 병동·간호사 28명 시드."""
-from datetime import date
+"""독립된 28명 데모 병동. python -m app.seed. 실제 병동의 인원/근무표는 변경하지 않는다."""
+import os
 
 from sqlalchemy import select
 
-from app.business import rules
+from app.business import access, auth, members, nurses, schedules
 from app.business.common import today_kst
-from app.domain.model import DutyRole, NurseRank, NurseStatus, Preset, Role
-from app.persistence import models  # noqa: F401
+from app.domain.model import DutyRole, NurseStatus, Preset
 from app.persistence.db import Base, SessionLocal, engine
+from app.persistence.migrations import upgrade
 from app.persistence.models import Nurse, User, Ward
-from app.persistence.migrations import migrate_legacy_schema
 
-OPERATOR_EMAIL = "operator@ottugi.local"
-
-# 수간호사 1명, 차지 2명, 일반 25명. 입사 연도와 직급은 독립적이다.
-NURSES = [
-    ("김수간", NurseRank.HEAD_NURSE, 1998, 5, False),
-    ("정차지", NurseRank.CHARGE_NURSE, 2003, 5, False),
-    ("문차지", NurseRank.CHARGE_NURSE, 2012, 5, False),
-    ("이하늘", NurseRank.STAFF_NURSE, 2001, 5, False),  # 25년 차 일반 간호사
-    ("박서연", NurseRank.STAFF_NURSE, 2004, 5, False),
-    ("최민준", NurseRank.STAFF_NURSE, 2006, 5, False),
-    ("한지민", NurseRank.STAFF_NURSE, 2008, 5, False),
-    ("오세훈", NurseRank.STAFF_NURSE, 2010, 4, False),
-    ("서유진", NurseRank.STAFF_NURSE, 2012, 4, False),
-    ("임도윤", NurseRank.STAFF_NURSE, 2014, 4, False),
-    ("배수아", NurseRank.STAFF_NURSE, 2015, 4, False),
-    ("조하린", NurseRank.STAFF_NURSE, 2016, 4, False),
-    ("장하준", NurseRank.STAFF_NURSE, 2017, 4, False),
-    ("송지아", NurseRank.STAFF_NURSE, 2018, 3, False),
-    ("백승호", NurseRank.STAFF_NURSE, 2019, 3, False),
-    ("강예은", NurseRank.STAFF_NURSE, 2020, 4, True),
-    ("권태오", NurseRank.STAFF_NURSE, 2020, 4, True),
-    ("황보람", NurseRank.STAFF_NURSE, 2021, 4, True),
-    ("신예린", NurseRank.STAFF_NURSE, 2021, 4, True),
-    ("노은서", NurseRank.STAFF_NURSE, 2022, 3, False),
-    ("하윤아", NurseRank.STAFF_NURSE, 2022, 3, False),
-    ("전민재", NurseRank.STAFF_NURSE, 2023, 2, False),
-    ("구다은", NurseRank.STAFF_NURSE, 2023, 2, False),
-    ("홍시우", NurseRank.STAFF_NURSE, 2024, 2, False),
-    ("천소율", NurseRank.STAFF_NURSE, 2024, 1, False),
-    ("엄지후", NurseRank.STAFF_NURSE, 2025, 1, False),
-    ("류나연", NurseRank.STAFF_NURSE, 2025, 1, False),
-    ("윤새봄", NurseRank.STAFF_NURSE, 2026, 1, False),
+DEMO_WARD = "10/26 데모 병동"
+DEMO_EMAIL = "head-nurse@demo.invalid"
+# 일반 간호사 25명. 프리셉터는 별도 속성이고 고경력 일반 간호사가 함께 있다.
+GENERAL = [
+    ("강하늘", 300, False), ("권태호", 60, True), ("김수관", 72, True),
+    ("노은서", 3, False), ("도유진", 240, False), ("류서연", 180, False),
+    ("문지호", 144, False), ("박수아", 120, False), ("배지민", 108, False),
+    ("서하린", 96, False), ("성민재", 84, False), ("송가람", 66, False),
+    ("신예린", 54, False), ("안도윤", 48, False), ("오세훈", 42, False),
+    ("유채원", 36, False), ("윤지아", 30, False), ("이하준", 24, False),
+    ("임보람", 18, False), ("장나연", 15, False), ("전승호", 12, False),
+    ("정소율", 9, False), ("조다은", 6, False), ("최시우", 4, False),
+    ("한지후", 2, False),
 ]
 
 
-def seed(db) -> None:
-    if db.scalar(select(Ward.id)):
-        return
-    user = db.scalar(select(User).where(User.email == OPERATOR_EMAIL))
-    if user is None:
-        # 외부 로그인 기능은 없지만 감사 로그의 내부 작업 주체는 안정적인 사용자 ID가 필요하다.
-        user = User(email=OPERATOR_EMAIL, password_hash="LOGIN_DISABLED", name="병동 관리자")
-        db.add(user)
-        db.flush()
-
-    ward = Ward(hospital_name="한빛대학병원", ward_name="7병동", code="DEMO2026")
-    db.add(ward)
-    db.flush()
-    # D/E/N 수치는 클라이언트 확인 전 임시값이며 docs/domain-rules-and-client-qa.md에 기록한다.
-    rules.seed(db, ward.id, Preset.STANDARD, {"D": 6, "E": 5, "N": 4})
-
-    start = today_kst().replace(month=1, day=1)
-    rows = []
-    for index, (name, rank, hire_year, skill, preceptor) in enumerate(NURSES):
-        duty_role = (DutyRole.CHARGE if rank == NurseRank.CHARGE_NURSE else
-                     DutyRole.PRECEPTOR if preceptor else
-                     DutyRole.NEW if skill == 1 else DutyRole.GENERAL)
-        nurse = Nurse(
-            ward_id=ward.id,
-            user_id=user.id if rank == NurseRank.HEAD_NURSE else None,
-            name=name,
-            role=Role.HEAD_NURSE if rank == NurseRank.HEAD_NURSE else Role.NURSE,
-            rank=rank,
-            duty_role=duty_role,
-            status=NurseStatus.PREGNANT if index == 22 else NurseStatus.ACTIVE,
-            hire_year=hire_year,
-            is_preceptor=preceptor,
-            joined_at=date(hire_year, 1, 1),
-            career_months=max(0, (today_kst().year - hire_year) * 12),
-            skill_level=skill,
-            affiliation_start=start,
-            affiliation_end=None,
-            preceptor_of=[],
-        )
-        db.add(nurse)
-        rows.append(nurse)
-    db.flush()
-
-    beginners = [n for n in rows if n.skill_level == 1]
-    for preceptor, beginner in zip((n for n in rows if n.is_preceptor), beginners):
-        preceptor.preceptor_of = [str(beginner.id)]
+def seed(db, head_password: str | None = None):
+    today = today_kst()
+    first = today.replace(day=1)
+    ward = db.scalar(select(Ward).where(Ward.ward_name == DEMO_WARD, Ward.hospital_name == "데모 병원"))
+    if ward is None:
+        actor = db.scalar(select(User).where(User.email == DEMO_EMAIL))
+        if actor is None:
+            password = head_password or os.getenv("DEMO_HEAD_PASSWORD")
+            if not password:
+                raise RuntimeError("새 데모 계정 생성에는 DEMO_HEAD_PASSWORD 환경 변수가 필요합니다")
+            auth.signup(db, "홍수간", DEMO_EMAIL, password, "seed")
+            actor = db.scalar(select(User).where(User.email == DEMO_EMAIL))
+        result = access.create(db, actor.id, dict(hospital_name="데모 병원", ward_name=DEMO_WARD, head_name="홍수간",
+            joined_year=today.year - 26, career_months=312, affiliation_start=first,
+            required_staff={"D": 7, "E": 5, "N": 4}, rule_preset=Preset.STANDARD))
+        ward_id = result["ward"]["id"]
+    else:
+        ward_id = ward.id
+        result = {"ward": {"id": ward_id}}
+    actor = db.scalar(select(Nurse).where(Nurse.ward_id == ward_id, Nurse.role == "HEAD_NURSE")).user_id
+    existing = {n.name: n for n in db.scalars(select(Nurse).where(Nurse.ward_id == ward_id))}
+    rows = [("김차지", 276, False, DutyRole.CHARGE), ("이차지", 120, False, DutyRole.CHARGE)]
+    rows += [(name, months, preceptor, DutyRole.NEW if months < 12 else DutyRole.GENERAL)
+             for name, months, preceptor in GENERAL]
+    for name, months, preceptor, role in rows:
+        if name not in existing:
+            result_nurse = nurses.create(db, actor, dict(name=name, duty_role=role, is_preceptor=preceptor,
+                status=NurseStatus.ACTIVE, joined_year=today.year - months // 12, career_months=months,
+                skill_level=min(5, 1 + months // 24), affiliation_start=first, affiliation_end=None, preceptor_of=None))
+            existing[name] = db.get(Nurse, result_nurse["id"])
+    for preceptor, trainee in (("권태호", "노은서"), ("김수관", "한지후")):
+        if not existing[preceptor].preceptor_of:
+            nurses.patch(db, actor, existing[preceptor].id, {"preceptor_of": [existing[trainee].id]}, None)
+    if schedules.by_month(db, ward_id, first) is None:
+        schedules.create(db, actor, first.strftime("%Y-%m"))
+    return {**result, "headEmail": DEMO_EMAIL}
 
 
-def main() -> None:
+def main():
+    import json
     Base.metadata.create_all(engine)
-    migrate_legacy_schema(engine)
+    upgrade(engine)
     with SessionLocal() as db:
-        seed(db)
+        result = seed(db)
         db.commit()
-    print("완료: 수간호사 1명, 차지 2명, 일반 간호사 25명")
+        print(json.dumps(result, ensure_ascii=False, default=str))
+    print("28명 데모 생성 완료. DEMO_HEAD_PASSWORD로 지정한 비밀번호를 사용해 로그인하세요.")
 
 
 if __name__ == "__main__":

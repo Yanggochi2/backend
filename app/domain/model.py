@@ -16,7 +16,7 @@ class Duty(StrEnum):
 
     @property
     def is_work(self) -> bool:
-        return self in (Duty.D, Duty.E, Duty.N)
+        return self in (Duty.D, Duty.E, Duty.N, Duty.ED)
 
 
 class Role(StrEnum):
@@ -26,19 +26,12 @@ class Role(StrEnum):
 
 
 class DutyRole(StrEnum):
-    """자동 생성 내부 분류. 외부 입력은 NurseRank·숙련도·프리셉터 속성으로 받는다."""
+    """NUR-05 배정 규칙용 속성. 권한(Role)과 별개."""
     CHARGE = "CHARGE"
     PRECEPTOR = "PRECEPTOR"
     NEW = "NEW"
     GENERAL = "GENERAL"
     NIGHT_ONLY = "NIGHT_ONLY"  # 나이트 전담: N과 OFF만, 월 나이트 15일 이내 (복지부 야간근무 가이드라인)
-
-
-class NurseRank(StrEnum):
-    """조직상 직급. 프리셉터와 경력은 직급과 독립된 속성이다."""
-    HEAD_NURSE = "HEAD_NURSE"
-    CHARGE_NURSE = "CHARGE_NURSE"
-    STAFF_NURSE = "STAFF_NURSE"
 
 
 class NurseStatus(StrEnum):
@@ -118,7 +111,7 @@ class RuleSetting:
 
 
 NIGHT_ONLY_MAX_NIGHTS = 15  # 나이트 전담 월 나이트 상한
-SENIOR_ROLES = frozenset({DutyRole.CHARGE, DutyRole.PRECEPTOR})  # 근무마다 1명 이상 있어야 하는 고연차
+SENIOR_ROLES = frozenset({DutyRole.CHARGE})  # 프리셉터는 직급이 아니다. 기존 선택 규칙 호환용
 
 
 @dataclass(frozen=True)
@@ -185,11 +178,14 @@ class NurseInfo:
     affiliation_start: date
     affiliation_end: date | None = None
     preceptees: frozenset = frozenset()
-    rank: NurseRank = NurseRank.STAFF_NURSE
-    hire_year: int | None = None
-    is_preceptor: bool = False
     role: Role = Role.NURSE
     career_months: int = 0
+    is_preceptor: bool = False
+    skill_level: int = 3  # 숙련도 1~5 (SKILL_MIX)
+
+    @property
+    def weekday_only(self) -> bool:
+        return self.role == Role.HEAD_NURSE or self.duty_role == DutyRole.CHARGE
 
     def affiliated(self, d: date) -> bool:
         return self.affiliation_start <= d and (self.affiliation_end is None or d <= self.affiliation_end)
@@ -214,6 +210,8 @@ class Roster:
     wish_offs: dict[object, set[date]] = field(default_factory=dict)
     wish_duties: Cells = field(default_factory=dict)
     before: Cells = field(default_factory=dict)
+    holidays: frozenset[date] = frozenset()
+    off_carry: dict[object, int] = field(default_factory=dict)  # 간호사 id -> 확정된 지난달에 못 쓰고 이월된 O 수
 
     def days(self) -> list[date]:
         n = calendar.monthrange(self.month.year, self.month.month)[1]

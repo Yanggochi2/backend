@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Enum, ForeignKey, Index, String, UniqueConstraint, 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.model import (AccountStatus, Duty, DutyRole, GenerationStatus, NotificationType, NurseInfo,
-                              NurseRank, NurseStatus, RequestStatus, RequestType, Role, ScheduleStatus, Severity)
+                              NurseStatus, RequestStatus, RequestType, Role, ScheduleStatus, Severity)
 from app.persistence.db import Base, now
 
 # 모든 식별자는 UUID. 순번 id로 다른 병동 리소스를 추측하지 못하게 한다
@@ -105,12 +105,10 @@ class Nurse(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     role: Mapped[Role] = mapped_column(_enum(Role), default=Role.NURSE)
-    rank: Mapped[NurseRank] = mapped_column(_enum(NurseRank), default=NurseRank.STAFF_NURSE)
     duty_role: Mapped[DutyRole] = mapped_column(_enum(DutyRole), default=DutyRole.GENERAL)
     status: Mapped[NurseStatus] = mapped_column(_enum(NurseStatus), default=NurseStatus.ACTIVE)
-    hire_year: Mapped[int]
-    is_preceptor: Mapped[bool] = mapped_column(default=False)
     joined_at: Mapped[date]
+    is_preceptor: Mapped[bool] = mapped_column(default=False, server_default=text("false"))
     career_months: Mapped[int] = mapped_column(default=0)
     skill_level: Mapped[int] = mapped_column(default=1)
     affiliation_start: Mapped[date]
@@ -123,13 +121,10 @@ class Nurse(Base):
     __mapper_args__ = {"version_id_col": version}
 
     def info(self) -> NurseInfo:
-        # 기존 생성기는 배정 분류를 사용한다. 외부 모델에서는 직급·프리셉터·숙련도를 분리하고
-        # 여기에서만 호환 분류로 변환한다.
-        duty_role = (DutyRole.CHARGE if self.rank == NurseRank.CHARGE_NURSE else
-                     DutyRole.PRECEPTOR if self.is_preceptor else self.duty_role)
-        return NurseInfo(self.id, self.name, duty_role, self.status, self.affiliation_start,
+        return NurseInfo(self.id, self.name, self.duty_role, self.status, self.affiliation_start,
                          self.affiliation_end, frozenset(uuid.UUID(x) for x in self.preceptor_of or []),
-                         self.rank, self.hire_year, self.is_preceptor, self.role, self.career_months)
+                         self.role, self.career_months, self.is_preceptor or self.duty_role == DutyRole.PRECEPTOR,
+                         self.skill_level)
 
 
 class Holiday(Base):
@@ -161,9 +156,6 @@ class Schedule(Base):
     cancelled_by: Mapped[uuid.UUID | None]
     cancel_reason: Mapped[str | None] = mapped_column(String(500))
     confirm_count: Mapped[int] = mapped_column(default=0)
-    # 로그인 없이 조회하는 공유 링크. 원문 토큰은 응답 시 한 번만 보여 주고 DB에는 해시만 저장한다.
-    share_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
-    shared_at: Mapped[datetime | None]
     # SCH-11 편집 잠금. 토큰은 해시만 저장
     locked_by: Mapped[uuid.UUID | None]
     locked_at: Mapped[datetime | None]
@@ -296,4 +288,15 @@ class OffRequestDeadline(Base):
     closes_at: Mapped[datetime | None]
     manually_closed: Mapped[bool] = mapped_column(default=False)
     version: Mapped[int] = mapped_column(default=0)
+    __mapper_args__ = {"version_id_col": version}
+
+
+class ScheduleShare(Base):
+    """확정본 조회 전용 링크. 교체·폐기 후 이전 토큰은 즉시 무효."""
+    __tablename__ = "schedule_shares"
+    id: Mapped[PK]
+    schedule_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("schedules.id"), unique=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(default=now)
+    version: Mapped[int] = mapped_column(default=1)
     __mapper_args__ = {"version_id_col": version}

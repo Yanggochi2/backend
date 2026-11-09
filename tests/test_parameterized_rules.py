@@ -21,7 +21,7 @@ def update(rules, code, **changes):
 
 def test_max_parameter_changes_generator_and_validator():
     ns = [nurse(1), nurse(2)]
-    base = Rules.preset(Preset.STANDARD, 0, 0, 1)
+    base = isolated_rules(Preset.STANDARD, 0, 0, 1)
     restrictive = update(base, "MAX_CONSECUTIVE_NIGHTS", parameters={"max": 1})
     fixed = {1: {DAY: Duty.N}}
     r = Roster(DAY, ns, fixed, restrictive, 0)
@@ -36,8 +36,8 @@ def test_max_parameter_changes_generator_and_validator():
 
 def test_charge_parameter_and_disabled_or_soft_rule():
     # 기본은 D·E·N 모두 허용 → D만 허용으로 좁혀 검사
-    base = update(Rules.preset(Preset.STANDARD, 0, 1, 0), "CHARGE_DAY_ONLY", enabled=True,
-                  parameters={"allowedDuties": ["D"]})
+    base = update(isolated_rules(Preset.STANDARD, 0, 1, 0), "CHARGE_DAY_ONLY", parameters={"allowedDuties": ["D"]})
+    base = update(base, "WEEKDAY_DAY_ONLY", enabled=False)
     ns = [nurse(1, DutyRole.CHARGE)]
     r = Roster(DAY, ns, {}, base, 0)
     assert not can_assign(r, ns[0], Duty.E, DAY)
@@ -51,7 +51,7 @@ def test_charge_parameter_and_disabled_or_soft_rule():
 
 def test_new_night_support_uses_current_assignments_and_parameter():
     ns = [nurse(1), nurse(2, DutyRole.NEW)]
-    rules = Rules.preset(Preset.STANDARD, 0, 0, 2)
+    rules = isolated_rules(Preset.STANDARD, 0, 0, 2)
     roster = Roster(DAY, ns, {}, rules, 0)
     result = roster.with_cells(generate(roster))
     assert result.cell(1, DAY) == result.cell(2, DAY) == Duty.N
@@ -64,7 +64,7 @@ def test_new_night_support_uses_current_assignments_and_parameter():
 
 def test_future_fixed_cell_and_previous_month_are_protected():
     n = nurse(1)
-    rules = Rules.preset(Preset.STANDARD, 0, 0, 1)
+    rules = isolated_rules(Preset.STANDARD, 0, 0, 1)
     r = Roster(DAY, [n], {1: {DAY + timedelta(days=1): Duty.D}}, rules, 0)
     assert not can_assign(r, n, Duty.N, DAY)
     r = replace(r, cells={}, before={1: {DAY - timedelta(days=i): Duty.N for i in (1, 2, 3)}})
@@ -81,3 +81,10 @@ def test_invalid_parameter_contract(code, params):
     from app.domain.rule_catalog import parameters
     with pytest.raises(ValueError):
         parameters(code, params)
+
+
+def isolated_rules(*args):
+    from dataclasses import replace
+    rules = Rules.preset(*args)
+    rules.settings["OFF_TARGET"] = replace(rules.settings["OFF_TARGET"], enabled=False)
+    return rules

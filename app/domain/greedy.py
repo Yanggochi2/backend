@@ -20,6 +20,10 @@ def generate(r: Roster) -> Cells:
     }
 
     for d in r.days():
+        for n in r.nurses:
+            if n.affiliated(d) and n.weekday_only and n.status != NurseStatus.ON_LEAVE and d not in cells[n.id]:
+                cells[n.id][d] = Duty.O if d.weekday() >= 5 or d in r.holidays else Duty.D
+                worked[n.id] += cells[n.id][d].is_work
         for duty in (Duty.N, Duty.E, Duty.D):
             need = r.rules.required(duty) - coverage(cur, d).get(duty, 0)
             candidates = [n for n in r.nurses

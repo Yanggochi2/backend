@@ -1,3 +1,5 @@
+> 이전 설계 기록입니다. 현재 10/26 회의 반영 계약은 저장소의 `docs/client-1026-api.md`와 `docs/client-1026-plan.md`를 참고하세요.
+
 # 규칙 엔진·병동 관리 API
 
 기본 경로 `/api/v1`. 성공은 `{ "data": ... }`, 오류는 `{ "error": { "code", "message", "traceId", ... } }`.
@@ -18,7 +20,10 @@
 | 간호사 등록 | POST `/wards/me/nurses` | 수간호사 |
 | 목록·상세 | GET `/wards/me/nurses`, GET `/wards/me/nurses/{nurseId}` | 병동 구성원, 응답 필드 차등 |
 | 간호사 정보 변경 | PATCH `/wards/me/nurses/{nurseId}` | 수간호사 |
+| 간호사 삭제(퇴사 처리) | DELETE `/wards/me/nurses/{nurseId}` | 수간호사 |
 | 퇴사 | POST `/wards/me/nurses/{nurseId}/retire` | 수간호사 |
+| 간호사 엑셀 양식 | GET `/wards/me/nurses/import-template.xlsx` | 수간호사 |
+| 간호사 엑셀 일괄 등록 | POST `/wards/me/nurses/import.xlsx` | 수간호사 |
 | 차지 목록 | GET `/wards/me/charges` | 수간호사 |
 | 차지 지정·해제 | PUT `/wards/me/nurses/{nurseId}/charge` | 수간호사 |
 | 희망 오프 마감 조회 | GET `/wards/me/off-request-deadlines/{YYYY-MM}` | 병동 구성원 |

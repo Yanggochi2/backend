@@ -40,12 +40,12 @@ def start(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, fixed: list[t
             raise unprocessable("PRECONDITION_FAILED", f"이 근무표의 셀이 아닙니다: {nurse_id} {d}")
 
     started = time.monotonic()
-    # 연차(AL)와 고정 셀만 남기고 나머지를 다시 짠다
+    # 연차(AL)·교육/학회(ED)와 고정 셀만 남기고 나머지를 다시 짠다
     keep = set(fixed)
     kept: Cells = {}
     for nurse_id, row in r.cells.items():
         for d, x in row.items():
-            if x == Duty.AL or (nurse_id, d) in keep:
+            if x in (Duty.AL, Duty.ED) or (nurse_id, d) in keep:
                 kept.setdefault(nurse_id, {})[d] = x
     cells = generator.generate(r.with_cells(kept), max_seconds)
     after = r.with_cells(cells)
