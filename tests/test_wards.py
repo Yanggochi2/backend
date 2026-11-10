@@ -6,6 +6,7 @@ def test_create_workspace_and_registered_head():
     assert h.data("GET", "/wards/me")["requiredStaff"] == {"D": 2, "E": 2, "N": 1}
     head = h.data("GET", "/wards/me/nurses")[0]
     assert head["role"] == "HEAD_NURSE" and head["joinedYear"] == 2000
+    assert h.workspace["headNurseId"] == head["id"]
     assert "joinCode" not in h.workspace
 
 

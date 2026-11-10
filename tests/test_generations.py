@@ -12,6 +12,7 @@ def test_generation_succeeds_and_applies():
     err(h("POST", f"/wards/me/generations/{job['id']}/stop", {}), 409, "JOB_ALREADY_FINISHED")
     after = h.data("GET", f"/wards/me/schedules/{s['id']}")
     assert after["version"] > s["version"] and all(c["dutyCode"] for c in after["cells"])
+    assert after["defaultView"] == "month"
     assert after["readiness"]["hardViolations"] == 0
 
 
