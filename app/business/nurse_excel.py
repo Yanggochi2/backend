@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.business import members, nurses
 from app.business.common import ApiException, today_kst, unprocessable
-from app.domain.model import DutyRole, NurseStatus
+from app.domain.model import DutyRole, NurseStatus, StaffType
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_ROWS = 500
-HEADERS = ("이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일")
+REQUIRED_HEADERS = ("이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일")
+HEADERS = REQUIRED_HEADERS + ("직종",)
 ROLE_ALIASES = {
     "일반": DutyRole.GENERAL, "GENERAL": DutyRole.GENERAL,
     "차지": DutyRole.CHARGE, "CHARGE": DutyRole.CHARGE,
@@ -26,6 +27,10 @@ STATUS_ALIASES = {
     "재직": NurseStatus.ACTIVE, "ACTIVE": NurseStatus.ACTIVE,
     "임신": NurseStatus.PREGNANT, "PREGNANT": NurseStatus.PREGNANT,
     "휴직": NurseStatus.ON_LEAVE, "ON_LEAVE": NurseStatus.ON_LEAVE,
+}
+STAFF_ALIASES = {
+    "간호사": StaffType.NURSE, "NURSE": StaffType.NURSE,
+    "간호조무사": StaffType.NURSING_ASSISTANT, "NURSING_ASSISTANT": StaffType.NURSING_ASSISTANT,
 }
 
 
@@ -41,15 +46,16 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
     ws.title = "간호사 등록"
     ws.append(HEADERS)
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:I{MAX_ROWS + 1}"
+    ws.auto_filter.ref = f"A1:J{MAX_ROWS + 1}"
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="4472C4")
-    widths = (16, 16, 14, 12, 14, 12, 10, 16, 16)
-    for column, width in zip("ABCDEFGHI", widths):
+    widths = (16, 16, 14, 12, 14, 12, 10, 16, 16, 20)
+    for column, width in zip("ABCDEFGHIJ", widths):
         ws.column_dimensions[column].width = width
     for column, values in (("B", '"GENERAL,CHARGE,NEW,NIGHT_ONLY"'),
-                           ("C", '"ACTIVE,PREGNANT,ON_LEAVE"'), ("E", '"Y,N"')):
+                           ("C", '"ACTIVE,PREGNANT,ON_LEAVE"'), ("E", '"Y,N"'),
+                           ("J", '"NURSE,NURSING_ASSISTANT"')):
         validation = DataValidation(type="list", formula1=values, allow_blank=False)
         ws.add_data_validation(validation)
         validation.add(f"{column}2:{column}{MAX_ROWS + 1}")
@@ -68,6 +74,7 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
         ("숙련도", "1~5 정수", "3"),
         ("소속시작일", "YYYY-MM-DD", "2026-01-01"),
         ("소속종료일", "선택, YYYY-MM-DD", ""),
+        ("직종", "NURSE 또는 NURSING_ASSISTANT, 비우면 NURSE", "NURSE"),
     ]
     for row in guide_rows:
         guide.append(row)
@@ -138,14 +145,14 @@ def _rows(ws):
 def _columns(header_row) -> dict[str, int]:
     headers = [str(value).strip() if value is not None else "" for value in header_row]
     present = [header for header in headers if header]
-    missing = sorted(set(HEADERS) - set(present))
+    missing = sorted(set(REQUIRED_HEADERS) - set(present))
     unexpected = sorted(set(present) - set(HEADERS))
     duplicates = sorted({header for header in present if present.count(header) > 1})
     if missing or unexpected or duplicates:
         raise unprocessable("INVALID_NURSE_EXCEL", "간호사 등록 양식의 열을 확인해 주세요",
                             {"missingHeaders": missing, "unexpectedHeaders": unexpected,
                              "duplicateHeaders": duplicates})
-    return {header: headers.index(header) + 1 for header in HEADERS}
+    return {header: headers.index(header) + 1 for header in HEADERS if header in headers}
 
 
 def _parse(values: dict) -> dict:
@@ -156,6 +163,8 @@ def _parse(values: dict) -> dict:
     if len(name) > 50:
         raise RowError("이름", "50자 이하여야 합니다")
     role = _enum(values["직무역할"], "직무역할", ROLE_ALIASES)
+    staff_type = (_enum(values.get("직종"), "직종", STAFF_ALIASES)
+                  if values.get("직종") not in (None, "") else StaffType.NURSE)
     status = _enum(values["상태"], "상태", STATUS_ALIASES)
     joined_year = _integer(values["입사연도"], "입사연도")
     if not 1900 <= joined_year <= today_kst().year:
@@ -163,17 +172,21 @@ def _parse(values: dict) -> dict:
     is_preceptor = _boolean(values["프리셉터"], "프리셉터")
     if role == DutyRole.PRECEPTOR:
         role, is_preceptor = DutyRole.GENERAL, True
-    career_months = _integer(values["경력개월"], "경력개월")
-    if career_months < 0:
-        raise RowError("경력개월", "0 이상이어야 합니다")
-    skill_level = _integer(values["숙련도"], "숙련도")
-    if not 1 <= skill_level <= 5:
+    career_months = _optional_integer(values["경력개월"], "경력개월")
+    skill_level = _optional_integer(values["숙련도"], "숙련도")
+    if skill_level is not None and not 1 <= skill_level <= 5:
         raise RowError("숙련도", "1~5 범위여야 합니다")
+    try:
+        career_months, skill_level = nurses.experience_values(joined_year, career_months, skill_level)
+    except ApiException as error:
+        api_field = error.field_errors[0]["field"] if error.field_errors else None
+        field = "숙련도" if api_field == "skillLevel" else "경력개월"
+        raise RowError(field, error.message) from None
     start = _date(values["소속시작일"], "소속시작일")
     end = _date(values["소속종료일"], "소속종료일", optional=True)
     if end is not None and end < start:
         raise RowError("소속종료일", "소속시작일보다 빠를 수 없습니다")
-    return {"name": name, "duty_role": role, "status": status, "joined_year": joined_year,
+    return {"name": name, "staff_type": staff_type, "duty_role": role, "status": status, "joined_year": joined_year,
             "is_preceptor": is_preceptor, "career_months": career_months, "skill_level": skill_level,
             "affiliation_start": start, "affiliation_end": end, "preceptor_of": None}
 
@@ -199,6 +212,10 @@ def _integer(value, field: str) -> int:
     if isinstance(value, str) and value.strip().isdecimal():
         return int(value.strip())
     raise RowError(field, "정수여야 합니다")
+
+
+def _optional_integer(value, field: str) -> int | None:
+    return None if value in (None, "") else _integer(value, field)
 
 
 def _boolean(value, field: str) -> bool:

@@ -8,7 +8,7 @@ from pydantic import (AfterValidator, BaseModel, ConfigDict, EmailStr, Field, St
                       StringConstraints, field_validator)
 from pydantic.alias_generators import to_camel
 
-from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity
+from app.domain.model import Duty, DutyRole, NurseStatus, Preset, Severity, StaffType
 
 Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=50)]
 NonBlank = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
@@ -79,12 +79,13 @@ class NurseFields(Body):
 
 class NurseCreate(NurseFields):
     name: Name
+    staff_type: StaffType = StaffType.NURSE
     duty_role: DutyRole
     status: NurseStatus
     joined_year: StrictInt
     is_preceptor: StrictBool = False
-    career_months: int = Field(ge=0)
-    skill_level: int = Field(ge=1, le=5)
+    career_months: int | None = Field(None, ge=0)
+    skill_level: int | None = Field(None, ge=1, le=5)
     affiliation_start: date
     affiliation_end: date | None = None
     preceptor_of: list[uuid.UUID] | None = None
@@ -94,6 +95,7 @@ class NursePatch(NurseFields):
     """등록과 같은 필드의 부분 수정. role·wardId는 입력할 수 없다."""
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
     name: Name | None = None
+    staff_type: StaffType | None = None
     duty_role: DutyRole | None = None
     status: NurseStatus | None = None
     joined_year: StrictInt | None = None
@@ -142,6 +144,17 @@ class CellChange(Body):
 class CellBulkPatch(Body):
     base_version: int
     changes: list[CellChange] = Field(min_length=1)
+
+
+class ForceOffCell(Body):
+    nurse_id: uuid.UUID
+    date: date
+
+
+class ForceOffPatch(Body):
+    base_version: int
+    cells: list[ForceOffCell] = Field(min_length=1)
+    reason: str | None = Field(None, max_length=500)
 
 
 class Confirm(Body):

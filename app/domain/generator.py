@@ -13,7 +13,8 @@ from datetime import date, timedelta
 from ortools.sat.python import cp_model
 
 from app.domain import greedy
-from app.domain.model import NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Cells, Duty, DutyRole, NurseStatus, Roster, Severity
+from app.domain.model import (NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Cells, Duty, DutyRole, NurseStatus, Roster,
+                              Severity, StaffType)
 from app.domain.validator import SKILL_TOLERANCE, has_role, off_target
 
 SHIFTS = (Duty.D, Duty.E, Duty.N, Duty.O)
@@ -322,7 +323,7 @@ class _Model:
         needs = {"CHARGE_EVERY_SHIFT": has_role(r, {DutyRole.CHARGE}), "SENIOR_EVERY_SHIFT": has_role(r, SENIOR_ROLES)}
         w_skill = self.weight("SKILL_MIX")
         for d in self.days:
-            on = [n for n in r.nurses if n.affiliated(d)]
+            on = [n for n in r.nurses if n.affiliated(d) and n.staff_type == StaffType.NURSE]
             for x in (Duty.D, Duty.E, Duty.N):
                 # 최소 인원 부족은 큰 감점으로 찾아낸 뒤 검증기에서 HARD로 보고한다. 초과 E/N은 억제한다.
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)

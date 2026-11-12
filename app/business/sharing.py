@@ -40,7 +40,7 @@ def revoke(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> None:
         audit.log(db, m.ward_id, user_id, "SCHEDULE_SHARE_REVOKED", "SCHEDULE", schedule_id)
 
 
-def get(db: Session, token: str, sort: str | None) -> dict:
+def get(db: Session, token: str, sort: str | None, q: str | None = None) -> dict:
     order = nurses.normalize_sort(sort)
     share = db.scalar(select(ScheduleShare).where(ScheduleShare.token_hash == sha256(token)))
     schedule = db.get(Schedule, share.schedule_id) if share else None
@@ -48,11 +48,15 @@ def get(db: Session, token: str, sort: str | None) -> dict:
         raise not_found("SCHEDULE_NOT_FOUND")
     roster = schedules.roster(db, schedule)
     rows = sorted_nurses(roster.nurses, order)
+    query = (q or "").strip()
+    if query:
+        folded = query.casefold()
+        rows = [n for n in rows if folded in n.name.casefold()]
     # 화이트리스트 응답. 상태/경력/입사연도/연차 사유/계정/잠금/규칙은 노출하지 않는다.
     # AL/ED도 공개 화면에서는 부재(O)로 통일한다.
     return {"yearMonth": schedule.year_month, "status": schedule.status, "version": schedule.version,
-            "defaultView": "month", "defaultSort": "proficiency", "sort": order,
-            "nurses": [{"id": n.id, "name": n.name, "role": n.role,
+            "defaultView": "month", "defaultSort": "proficiency", "sort": order, "query": query,
+            "nurses": [{"id": n.id, "name": n.name, "role": n.role, "staffType": n.staff_type,
                         "dutyRole": DutyRole.GENERAL if n.duty_role == DutyRole.PRECEPTOR else n.duty_role} for n in rows],
             "cells": [{"nurseId": n.id, "date": d.isoformat(),
                        "dutyCode": Duty.O if roster.cell(n.id, d) in (Duty.AL, Duty.ED) else roster.cell(n.id, d),

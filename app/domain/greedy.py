@@ -4,7 +4,7 @@ GEN-01 대체 생성기 (CP-SAT이 시간 안에 해를 못 찾을 때). 날짜 
 희망 오프는 후순위, 희망 근무는 해당 듀티에 우선 배정(소프트). 이전 달 말 근무(Roster.before)를 이어서 센다.
 휴직(ON_LEAVE) 간호사는 배정하지 않는다(O).
 """
-from app.domain.model import Cells, Duty, DutyRole, NurseStatus, Roster
+from app.domain.model import Cells, Duty, DutyRole, NurseStatus, Roster, StaffType
 from app.domain.rule_engine import can_assign
 from app.domain.validator import coverage
 
@@ -27,7 +27,8 @@ def generate(r: Roster) -> Cells:
         for duty in (Duty.N, Duty.E, Duty.D):
             need = r.rules.required(duty) - coverage(cur, d).get(duty, 0)
             candidates = [n for n in r.nurses
-                          if n.affiliated(d) and n.status != NurseStatus.ON_LEAVE and cells[n.id].get(d) is None]
+                          if n.staff_type == StaffType.NURSE and n.affiliated(d)
+                          and n.status != NurseStatus.ON_LEAVE and cells[n.id].get(d) is None]
             candidates.sort(key=lambda n: (
                 duty == Duty.N and n.duty_role == DutyRole.NEW,   # 신입은 N에 마지막
                 worked[n.id] >= work_goal[n.id],                  # OFF 목표를 이미 채운 사람은 후순위

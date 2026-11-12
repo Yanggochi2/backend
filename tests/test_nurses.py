@@ -27,9 +27,12 @@ def test_patch_partial_with_version():
 
 
 def test_list_filter_sort_and_page():
+    from app.business.common import today_kst
+
     h = ward_head()
     ids = add_nurses(h, 3)
-    h.data("PATCH", f"/wards/me/nurses/{ids[2]}", {"careerMonths": 99})
+    h.data("PATCH", f"/wards/me/nurses/{ids[2]}", {"joinedYear": today_kst().year - 8,
+                                                     "careerMonths": 96})
     p = h("GET", "/wards/me/nurses?sort=proficiency&size=2").json()
     assert p["data"][1]["id"] == ids[2] and p["meta"]["totalElements"] == 4 and p["meta"]["totalPages"] == 2
     assert [x["id"] for x in h.data("GET", "/wards/me/nurses?q=간호사01")] == [ids[1]]
@@ -64,18 +67,51 @@ def test_other_ward_nurse_is_hidden():
 
 
 def test_year_only_and_preceptor_is_not_rank():
+    from app.business.common import today_kst
+
     h = ward_head()
-    for year in (True, 1899, 9999, "2020"):
-        err(h("POST", "/wards/me/nurses", {**NURSE, "name": "입사", "joinedYear": year}), 400, "VALIDATION_ERROR")
-    ordinary = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "가일반", "careerMonths": 300})
-    preceptor = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "나프리", "isPreceptor": True, "careerMonths": 60})
-    charge = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "다차지", "dutyRole": "CHARGE", "careerMonths": 276})
+    current_year = today_kst().year
+    for invalid_year in (True, 1899, 9999, "2020"):
+        err(h("POST", "/wards/me/nurses", {**NURSE, "name": "입사", "joinedYear": invalid_year}),
+            400, "VALIDATION_ERROR")
+    ordinary = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "가일반", "joinedYear": current_year - 25,
+                                                     "careerMonths": 300})
+    preceptor = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "나프리", "isPreceptor": True,
+                                                       "joinedYear": current_year - 5, "careerMonths": 60})
+    charge = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "다차지", "dutyRole": "CHARGE",
+                                                   "joinedYear": current_year - 23, "careerMonths": 276})
     assert preceptor["dutyRole"] == "GENERAL" and preceptor["isPreceptor"]
     assert [n["id"] for n in h.data("GET", "/wards/me/nurses")] == [h.workspace["headNurseId"], charge["id"], ordinary["id"], preceptor["id"]]
     assert h.data("GET", "/wards/me/nurses?sort=name")[0]["id"] == ordinary["id"]
     err(h("GET", "/wards/me/nurses?sort=careerMonths,desc"), 400, "INVALID_SORT")
-    result = h.data("PATCH", f"/wards/me/nurses/{ordinary['id']}", {"joinedYear": 2001})["nurse"]
-    assert result["joinedYear"] == 2001 and "joinedAt" not in result and result["affiliationStart"] == "2025-01-01"
+    result = h.data("PATCH", f"/wards/me/nurses/{ordinary['id']}", {"joinedYear": current_year - 24})["nurse"]
+    assert result["joinedYear"] == current_year - 24 and "joinedAt" not in result and result["affiliationStart"] == "2025-01-01"
+
+
+def test_experience_defaults_validation_and_nursing_assistant():
+    from app.business.common import today_kst
+
+    h = ward_head()
+    year = today_kst().year
+    junior = h.data("POST", "/wards/me/nurses", {
+        "name": "신규3개월", "staffType": "NURSE", "dutyRole": "NEW", "status": "ACTIVE",
+        "joinedYear": year, "careerMonths": 3, "affiliationStart": f"{year}-01-01",
+    })
+    assert junior["careerMonths"] == 3 and junior["skillLevel"] == 1
+    err(h("PATCH", f"/wards/me/nurses/{junior['id']}", {"skillLevel": 4}), 400, "VALIDATION_ERROR")
+    err(h("POST", "/wards/me/nurses", {
+        "name": "숙련도오류", "dutyRole": "NEW", "status": "ACTIVE", "joinedYear": year,
+        "careerMonths": 3, "skillLevel": 4, "affiliationStart": f"{year}-01-01",
+    }), 400, "VALIDATION_ERROR")
+    err(h("POST", "/wards/me/nurses", {
+        **NURSE, "name": "경력오류", "joinedYear": year, "careerMonths": 120,
+    }), 400, "VALIDATION_ERROR")
+    assistant = h.data("POST", "/wards/me/nurses", {
+        **NURSE, "name": "김조무", "staffType": "NURSING_ASSISTANT",
+    })
+    assert assistant["staffType"] == "NURSING_ASSISTANT"
+    result = h.data("GET", "/wards/me/nurses?staffType=NURSING_ASSISTANT")
+    assert [row["id"] for row in result] == [assistant["id"]]
 
 
 def test_delete_unlinks_only_removed_preceptee():

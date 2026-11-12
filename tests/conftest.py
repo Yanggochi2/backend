@@ -82,7 +82,8 @@ def member(h: Api, name="간호사") -> tuple[Api, str]:
     return Api(), nurse["id"]
 
 
-NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": 2025, "careerMonths": 12, "skillLevel": 3,
+NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": today_kst().year - 1,
+         "careerMonths": 12, "skillLevel": 3,
          "affiliationStart": "2025-01-01"}
 
 

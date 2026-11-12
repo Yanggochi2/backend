@@ -4,7 +4,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 from app.domain.model import (NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Duty, DutyRole, NurseStatus, Roster, Severity,
-                              Violation)
+                              StaffType, Violation)
 from app.domain.rule_engine import assignment_violations
 
 HARD, SOFT = Severity.HARD, Severity.SOFT
@@ -69,7 +69,8 @@ def validate(r: Roster) -> list[Violation]:
                 continue
             for duty in (Duty.D, Duty.E, Duty.N):
                 if rules.required(duty) > 0 and not any(
-                        n.duty_role in roles and n.affiliated(d) and r.cell(n.id, d) == duty for n in r.nurses):
+                        n.staff_type == StaffType.NURSE and n.duty_role in roles and n.affiliated(d)
+                        and r.cell(n.id, d) == duty for n in r.nurses):
                     out.append(Violation(HARD, code, None, d, duty, f"{duty} 근무에 {label} 없음"))
     return [replace(v, severity=rules.severity_for(v.rule_id)) for v in out if rules.enabled(v.rule_id)]
 
@@ -112,14 +113,16 @@ def skill_mix(r: Roster, d: date) -> dict[Duty, float]:
     by: dict[Duty, list[int]] = {}
     for n in r.nurses:
         x = r.cell(n.id, d)
-        if x is not None and x.is_work and n.affiliated(d) and not n.weekday_only:
+        if (n.staff_type == StaffType.NURSE and x is not None and x.is_work and n.affiliated(d)
+                and not n.weekday_only):
             by.setdefault(x, []).append(n.skill_level)
     return {x: sum(v) / len(v) for x, v in by.items()}
 
 
 def has_role(r: Roster, roles) -> bool:
     """근무마다 차지·고연차 규칙은 병동에 그 역할이 한 명이라도 있을 때만 적용한다"""
-    return any(n.duty_role in roles and n.status != NurseStatus.ON_LEAVE for n in r.nurses)
+    return any(n.staff_type == StaffType.NURSE and n.duty_role in roles and n.status != NurseStatus.ON_LEAVE
+               for n in r.nurses)
 
 
 def _patterns(r: Roster, n, d: date, x: Duty | None) -> list[Violation]:
@@ -154,11 +157,11 @@ def _weekly_rest(r: Roster, n, days: list[date]) -> list[Violation]:
 
 
 def coverage(r: Roster, d: date) -> dict[Duty, int]:
-    """SCH-05. 소속 기간 밖·미배정은 세지 않는다."""
+    """SCH-05. 간호사 필요 인원에는 간호조무사를 포함하지 않는다."""
     c: Counter[Duty] = Counter()
     for n in r.nurses:
         x = r.cell(n.id, d)
-        if x is not None and n.affiliated(d):
+        if n.staff_type == StaffType.NURSE and x is not None and n.affiliated(d):
             c[x] += 1
     return dict(c)
 

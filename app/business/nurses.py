@@ -8,17 +8,18 @@ from sqlalchemy.orm import Session
 from app.business import audit, members, schedules, wards
 from app.business.common import (bad_request, conflict, iso, not_found, page, today_kst, unprocessable)
 from app.business.members import Member
-from app.domain.model import DutyRole, NurseStatus, Role
+from app.domain.model import DutyRole, NurseStatus, Role, StaffType
 from app.domain.nurse_sort import sorted_nurses
 from app.persistence.models import Nurse
 
-FIELDS = {"name": "name", "dutyRole": "duty_role", "status": "status", "joinedYear": "joined_year",
+FIELDS = {"name": "name", "staffType": "staff_type", "dutyRole": "duty_role", "status": "status", "joinedYear": "joined_year",
           "isPreceptor": "is_preceptor", "careerMonths": "career_months", "skillLevel": "skill_level",
           "affiliationStart": "affiliation_start", "affiliationEnd": "affiliation_end", "preceptorOf": "preceptor_of"}
 
 
 def list_(db: Session, user_id: uuid.UUID, q: str | None, role: Role | None, duty_role: DutyRole | None,
-          status: NurseStatus | None, include_retired: bool, sort: str | None, page_no: int, size: int) -> dict:
+          staff_type: StaffType | None, status: NurseStatus | None, include_retired: bool, sort: str | None,
+          page_no: int, size: int) -> dict:
     m = members.require(db, user_id)
     if status is not None and not m.is_head:
         # 일반 간호사가 상태 필터로 타인의 임신·휴직 여부를 알아내지 못하게 한다
@@ -29,6 +30,7 @@ def list_(db: Session, user_id: uuid.UUID, q: str | None, role: Role | None, dut
             and (not q or q.strip() in n.name)
             and (role is None or n.role == role)
             and (duty_role is None or n.duty_role == duty_role)
+            and (staff_type is None or n.staff_type == staff_type)
             and (status is None or n.status == status)]
     rows = sorted_nurses(rows, sort)
     # ponytail: 병동 단위(수십 명)라 메모리 필터·페이징. 수천 명 규모면 쿼리로
@@ -45,6 +47,8 @@ def create(db: Session, user_id: uuid.UUID, f: dict) -> dict:
     """계정 없이 간호사를 등록한다. role·병동은 서버에서 정한다."""
     m = members.require_head(db, user_id)
     f = dict(f)
+    f.setdefault("staff_type", StaffType.NURSE)
+    f = _experience(f, creating=True)
     if db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.name == f["name"],
                                         Nurse.joined_at >= date(f["joined_year"], 1, 1),
                                         Nurse.joined_at <= date(f["joined_year"], 12, 31), Nurse.status != NurseStatus.RETIRED)):
@@ -65,6 +69,7 @@ def patch(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID, changes: dict, v
         raise conflict("INVALID_RESOURCE_STATE", "퇴사자는 수정할 수 없습니다")
     if version is not None and version != n.version:
         raise conflict("VERSION_CONFLICT", "다른 사용자가 먼저 수정했습니다", {"currentVersion": n.version})
+    changes = _experience(dict(changes), n.joined_at.year, n.career_months, n.skill_level)
     for k, v in changes.items():
         if v is None and k not in ("affiliation_end", "preceptor_of"):
             camel = next(c for c, a in FIELDS.items() if a == k)
@@ -126,7 +131,8 @@ def remove(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> None:
 
 def view(n: Nurse, full: bool) -> dict:
     """관리자 간호사 응답. 입사일 원본은 유지하되 연도만 공개한다."""
-    v = {"id": n.id, "name": n.name, "role": n.role, "dutyRole": DutyRole.GENERAL if n.duty_role == DutyRole.PRECEPTOR else n.duty_role,
+    v = {"id": n.id, "name": n.name, "role": n.role, "staffType": n.staff_type,
+         "dutyRole": DutyRole.GENERAL if n.duty_role == DutyRole.PRECEPTOR else n.duty_role,
          "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
          "status": None, "joinedYear": None, "isPreceptor": n.is_preceptor or n.duty_role == DutyRole.PRECEPTOR, "careerMonths": None, "skillLevel": None, "preceptorOf": None,
          "hasAccount": None, "inviteExpiresAt": None, "version": n.version}
@@ -144,6 +150,9 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
         raise bad_request("VALIDATION_ERROR", "소속 종료일이 시작일보다 빠릅니다", "affiliationEnd")
     if f["duty_role"] == DutyRole.PRECEPTOR:
         f = {**f, "duty_role": DutyRole.GENERAL, "is_preceptor": True}
+    if f["staff_type"] == StaffType.NURSING_ASSISTANT and (
+            f["duty_role"] != DutyRole.GENERAL or f["is_preceptor"] or f["preceptor_of"]):
+        raise unprocessable("INVALID_STAFF_ROLE", "간호조무사는 일반 직무역할로 등록해 주세요")
     if f["preceptor_of"] and not f["is_preceptor"]:
         raise unprocessable("INVALID_PRECEPTOR", "프리셉터를 지정한 간호사만 담당 신입을 연결할 수 있습니다")
     duplicate = db.scalar(select(Nurse.id).where(
@@ -165,6 +174,43 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
         elif attr != "preceptor_of":
             setattr(n, attr, f[attr])
     n.preceptor_of = sorted({str(p) for p in f["preceptor_of"] or []})
+
+
+def experience_values(joined_year: int, career_months: int | None, skill_level: int | None) -> tuple[int, int]:
+    """입사 월을 받지 않으므로 해당 입사연도에서 가능한 경력 범위를 검증하고 빈 값은 자동 계산한다."""
+    today = today_kst()
+    maximum = (today.year - joined_year) * 12 + today.month - 1
+    minimum = 0 if joined_year == today.year else max(0, (today.year - joined_year - 1) * 12 + today.month)
+    career = maximum if career_months is None else career_months
+    if not minimum <= career <= maximum:
+        raise bad_request("VALIDATION_ERROR",
+                          f"입사연도 {joined_year}년의 가능한 경력은 {minimum}~{maximum}개월입니다",
+                          "careerMonths")
+    skill = (1 if career <= 3 else 2 if career <= 6 else 3) if skill_level is None else skill_level
+    if career <= 3 and skill not in (1, 2):
+        raise bad_request("VALIDATION_ERROR", "경력 3개월 이하는 숙련도 1~2만 선택할 수 있습니다", "skillLevel")
+    return career, skill
+
+
+def _experience(changes: dict, joined_year: int | None = None, current_career: int | None = None,
+                current_skill: int | None = None, creating: bool = False) -> dict:
+    """등록·수정에서 입사연도 변경 시 경력과 초기 숙련도를 함께 맞춘다."""
+    year = changes.get("joined_year", joined_year)
+    if year is None:
+        return changes
+    touches_experience = any(field in changes for field in ("joined_year", "career_months", "skill_level"))
+    if not creating and not touches_experience:
+        return changes
+    career_given = changes.get("career_months")
+    if not creating and "joined_year" not in changes and "career_months" not in changes:
+        career_given = current_career
+    skill_given = changes.get("skill_level") if "skill_level" in changes else None
+    career, skill = experience_values(year, career_given, skill_given)
+    if creating or "joined_year" in changes or "career_months" in changes:
+        changes["career_months"] = career
+    if "skill_level" in changes or creating or career <= 6:
+        changes["skill_level"] = skill if skill_given is not None or career <= 6 or creating else current_skill
+    return changes
 
 
 def _result(db: Session, m: Member, n: Nurse) -> dict:
