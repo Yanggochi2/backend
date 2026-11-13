@@ -3,7 +3,7 @@ import io
 
 from openpyxl import Workbook, load_workbook
 
-from conftest import NEXT, YM, add_nurses, err, fill_rotation, member, ward_head
+from conftest import NEXT, NURSE, YM, add_nurses, err, fill_rotation, member, ward_head
 
 
 def _xlsx(wb) -> bytes:
@@ -125,3 +125,45 @@ def test_import_still_reads_a_file_exported_in_the_previous_layout():
     p = h.data("POST", f"/wards/me/schedules/{s['id']}/import-previews", files={"file": ("old.xlsx", _xlsx(wb))}, status=202)
     assert [r["name"] for r in p["rows"]] == [s["nurses"][1]["name"]]
     assert sorted(c["raw"] for c in p["cells"]) == ["D", "E"] and p["unresolved"] == {"rows": [], "codes": []}
+
+
+def _export_rows(h, schedule_id) -> dict:
+    """내보낸 엑셀의 간호사 행 → {이름: (남은 OFF, 총 OFF)}. 아랫줄 인원 행에서 멈춘다"""
+    ws = load_workbook(io.BytesIO(h("GET", f"/wards/me/schedules/{schedule_id}/export.xlsx").content)).active
+    rows = {}
+    for r in range(3, ws.max_row + 1):
+        name = ws.cell(r, 1).value
+        if not name or "인원" in str(name):
+            break
+        rows[name] = (ws.cell(r, 2).value, ws.cell(r, ws.max_column).value)
+    return rows
+
+
+def test_export_follows_the_database_not_fixed_rows():
+    """행·근무·OFF 값은 고정값이 아니라 그때그때 DB에서 만든다: 간호사 추가·근무 입력·삭제가 다시 내보낸 파일에 바로 반영된다"""
+    h = ward_head()
+    add_nurses(h, 3)
+    s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
+    sid = s["id"]
+    assert set(_export_rows(h, sid)) == {"수간호사", "간호사00", "간호사01", "간호사02"}
+
+    # 간호사를 등록하면 그 사람 행이 늘어난다 (이름은 DB 값 그대로, 근무가 없으면 총 OFF 0)
+    nurse = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "신규등록"}, status=201)
+    before = _export_rows(h, sid)
+    assert set(before) == {"수간호사", "간호사00", "간호사01", "간호사02", "신규등록"} and before["신규등록"][1] == 0
+
+    # 근무(O)를 입력하면 총 OFF는 늘고 남은 OFF는 줄며, 두 값 모두 API 통계와 같다
+    version = h.data("GET", f"/wards/me/schedules/{sid}")["version"]
+    h.data("PATCH", f"/wards/me/schedules/{sid}/cells", {"baseVersion": version, "changes": [
+        {"nurseId": nurse["id"], "date": f"{YM}-05", "dutyCode": "O"},
+        {"nurseId": nurse["id"], "date": f"{YM}-06", "dutyCode": "O"}]})
+    after = _export_rows(h, sid)
+    assert after["신규등록"] == (before["신규등록"][0] - 2, 2)
+    api = h.data("GET", f"/wards/me/schedules/{sid}")
+    names = {n["id"]: n["name"] for n in api["nurses"]}
+    assert {names[x["nurseId"]]: (x["remainingOff"], x["O"]) for x in api["statistics"]} == after
+
+    # 간호사를 삭제하면 (다음 달 근무표에서) 그 행이 사라지고 나머지는 그대로다
+    assert h("DELETE", f"/wards/me/nurses/{nurse['id']}").status_code == 204
+    gone = _export_rows(h, sid)
+    assert "신규등록" not in gone and gone == {k: v for k, v in before.items() if k != "신규등록"}
