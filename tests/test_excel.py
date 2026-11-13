@@ -21,20 +21,20 @@ def test_export_then_import_with_mapping():
     assert x.status_code == 200 and x.headers["content-type"].startswith("application/vnd.openxmlformats")
     wb = load_workbook(io.BytesIO(x.content))
     ws = wb.active
-    # 1행 제목, 2~3행 일자·요일 머리글, 4행부터 간호사. 일자 1일은 3열
-    assert ws.cell(2, 1).value == "이름" and ws.cell(4, 1).value == s["nurses"][0]["name"]
-    ws.cell(4, 4).value = "OFF"  # 첫 간호사 2일 → O
-    ws.cell(5, 5).value = "???"  # 모르는 코드 → 매핑 필요
-    ws.cell(6, 1).value = "없는사람"  # 미등록 이름 → 행 매핑 필요
+    # 1행 요일, 2행 일자 머리글(이름·남은 OFF·일자·총 OFF), 3행부터 간호사. 일자 1일은 3열
+    assert ws.cell(2, 1).value == "이름" and ws.cell(3, 1).value == s["nurses"][0]["name"]
+    ws.cell(3, 4).value = "OFF"  # 첫 간호사 2일 → O
+    ws.cell(4, 5).value = "???"  # 모르는 코드 → 매핑 필요
+    ws.cell(5, 1).value = "없는사람"  # 미등록 이름 → 행 매핑 필요
 
     err(h("POST", url + "/import-previews", files={"file": ("x.xlsx", b"nope")}), 422, "INVALID_EXCEL_FORMAT")
     p = h.data("POST", url + "/import-previews", files={"file": ("s.xlsx", _xlsx(wb))}, status=202)
-    assert p["unresolved"] == {"rows": [6], "codes": ["???"]}
+    assert p["unresolved"] == {"rows": [5], "codes": ["???"]}
     purl = f"{url}/import-previews/{p['id']}"
     err(h("POST", purl + "/apply", {"baseVersion": s["version"]}), 422, "UNRESOLVED_MAPPING")
     err(h("PATCH", purl, {"dutyMappings": [{"raw": "???", "dutyCode": "AL"}]}), 422, "INVALID_MAPPING")
     p = h.data("PATCH", purl, {"dutyMappings": [{"raw": "???", "dutyCode": "O"}],
-                               "nurseMappings": [{"rowNumber": 6, "nurseId": None}]})
+                               "nurseMappings": [{"rowNumber": 5, "nurseId": None}]})
     assert p["unresolved"] == {"rows": [], "codes": []}
     err(h("POST", purl + "/apply", {"baseVersion": s["version"] - 1}), 409, "VERSION_CONFLICT")
     r = h.data("POST", purl + "/apply", {"baseVersion": s["version"]})
@@ -62,31 +62,33 @@ def test_export_writes_formula_like_names_as_text():
     assert c.data_type == "s" and c.value == "=1+00"
 
 
-def test_export_layout_is_a_printable_schedule():
+def test_export_layout_matches_the_schedule_screen_and_only_the_schedule():
     h = ward_head()
     add_nurses(h, 4)
     s = fill_rotation(h, h.data("POST", "/wards/me/schedules", {"yearMonth": YM}))
     ws = load_workbook(io.BytesIO(h("GET", f"/wards/me/schedules/{s['id']}/export.xlsx").content)).active
     days = len({c["date"] for c in s["cells"]})
-    last_day = 2 + days
-    # 제목 · 머리글(이름·직급·일자·요일·합계)
-    assert ws.cell(1, 1).value == f"{NEXT.year}년 {NEXT.month}월 근무표 · 7병동"
-    assert [ws.cell(2, c).value for c in (1, 2, 3, last_day)] == ["이름", "직급", 1, days]
-    assert [ws.cell(2, last_day + i).value for i in range(1, 6)] == ["D", "E", "N", "OFF", "AL"]
-    assert ws.cell(3, 3).value == "월화수목금토일"[NEXT.replace(day=1).weekday()]
-    # 직급 열과 합계 열
-    assert ws.cell(4, 2).value == "수간호사" and ws.cell(5, 2).value == "간호사"
-    for line in range(4, 4 + 5):
+    last_day, total = 2 + days, 3 + days
+    # 근무표만: 제목 줄·직급 열·D/E/N/AL 합계 열·범례가 없다
+    assert [ws.cell(2, c).value for c in (1, 2, 3, last_day, total)] == ["이름", "남은 OFF", 1, days, "총 OFF"]
+    assert ws.max_column == total and "범례" not in [ws.cell(r, 1).value for r in range(1, ws.max_row + 1)]
+    assert ws.cell(1, 3).value == "월화수목금토일"[NEXT.replace(day=1).weekday()]  # 위 줄 요일, 아래 줄 날짜
+    # 간호사 행: 이름, 남은 OFF = max(목표 − O, 0), 총 OFF = O 개수
+    nurses = 5  # 수간호사 + 4
+    for line in range(3, 3 + nurses):
         duties = [ws.cell(line, c).value for c in range(3, last_day + 1)]
-        assert [ws.cell(line, last_day + 1 + i).value for i in range(5)] == [duties.count(x) for x in "DENO"] + [0]
+        assert ws.cell(line, total).value == duties.count("O")
+        assert ws.cell(line, 2).value >= 0
+    assert ws.cell(3, 1).value == s["nurses"][0]["name"]
     # 근무 칸 색 (화면과 같은 진한 배경 + 흰 글씨, O는 옅은 회색)
-    cells = {ws.cell(line, c).value: ws.cell(line, c) for line in range(4, 9) for c in range(3, last_day + 1)}
+    cells = {ws.cell(line, c).value: ws.cell(line, c) for line in range(3, 3 + nurses) for c in range(3, last_day + 1)}
     assert cells["D"].fill.fgColor.rgb.endswith("B97D00") and cells["D"].font.color.rgb.endswith("FFFFFF")
     assert cells["O"].fill.fgColor.rgb.endswith("EEF0F3")
-    # 날짜별 인원 행 · 범례 · 고정 틀 · 인쇄 설정
-    assert [ws.cell(9 + i, 1).value for i in range(3)] == ["D 인원 (필요 1)", "E 인원 (필요 1)", "N 인원 (필요 1)"]
-    assert ws.cell(12 + 1, 1).value == "범례"
-    assert ws.freeze_panes == "C4"
+    # 아랫줄: 날짜별 D/E/N 인원 "실제/필요"
+    assert [ws.cell(3 + nurses + i, 1).value for i in range(3)] == ["D 인원", "E 인원", "N 인원"]
+    assert all(str(ws.cell(3 + nurses, c).value).endswith("/1") for c in range(3, last_day + 1))
+    # 고정 틀 · 인쇄 설정
+    assert ws.freeze_panes == "C3"
     assert ws.page_setup.orientation == "landscape" and int(ws.page_setup.paperSize) == int(ws.PAPERSIZE_A4)
     assert ws.sheet_properties.pageSetUpPr.fitToPage and ws.page_setup.fitToHeight == 1
 
@@ -104,3 +106,22 @@ def test_import_does_not_treat_a_number_in_title_as_the_date_header():
                      files={"file": ("schedule.xlsx", _xlsx(workbook))}, status=202)
     assert [row["name"] for row in preview["rows"]] == ["간호사00"]
     assert [(cell["date"][-2:], cell["raw"]) for cell in preview["cells"]] == [("01", "D"), ("02", "E")]
+
+
+def test_import_still_reads_a_file_exported_in_the_previous_layout():
+    """이전 내보내기 양식(제목 줄·직급 열·일자 아래 요일 줄·인원 (필요 n) 행·범례)으로 저장해 둔 파일도 가져온다"""
+    h = ward_head()
+    add_nurses(h, 2)
+    s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
+    days = len({c["date"] for c in s["cells"]})
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["2026년 12월 근무표 · 7병동"])
+    ws.append(["이름", "직급"] + list(range(1, days + 1)) + ["D", "E", "N", "OFF", "AL"])
+    ws.append([None, None] + ["월"] * days)
+    ws.append([s["nurses"][1]["name"], "간호사", "D", "E"])
+    ws.append(["D 인원 (필요 1)", None] + [1] * days)
+    ws.append(["범례", "D 데이"])
+    p = h.data("POST", f"/wards/me/schedules/{s['id']}/import-previews", files={"file": ("old.xlsx", _xlsx(wb))}, status=202)
+    assert [r["name"] for r in p["rows"]] == [s["nurses"][1]["name"]]
+    assert sorted(c["raw"] for c in p["cells"]) == ["D", "E"] and p["unresolved"] == {"rows": [], "codes": []}
