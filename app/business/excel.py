@@ -12,9 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.business import audit, members, schedules
 from app.business.common import ApiException, not_found, unprocessable
-from app.domain.model import Duty, DutyRole, Role, StaffType
+from app.domain import validator
+from app.domain.model import Duty, StaffType
 from app.persistence.db import now
-from app.persistence.models import ImportPreview, Ward
+from app.persistence.models import ImportPreview
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 # 화면(근무표 시트)과 같은 색: 근무 D·E·N·AL은 진한 배경 + 흰 글씨, O·ED는 옅은 회색
@@ -24,16 +25,11 @@ HEAD_FILL, LINE = "F6F7F9", "D0D5DB"
 SAT = ("E8F3FF", "3182F6")  # (배경, 글씨) 토요일
 SUN = ("FFEBEE", "F04452")  # 일요일·공휴일
 WEEKDAYS = "월화수목금토일"
-POSITION = {DutyRole.CHARGE: "차지", DutyRole.NEW: "신규", DutyRole.NIGHT_ONLY: "나이트전담"}
-LEGEND = [(Duty.D, "D 데이"), (Duty.E, "E 이브닝"), (Duty.N, "N 나이트"), (Duty.O, "O 휴무"), (Duty.AL, "AL 연차")]
-LEGEND_LABEL = "범례"  # 이 행부터는 근무표가 아니라 설명이라 가져오기에서 읽지 않는다
+NAME_COLS = 2  # 이름 · 남은 OFF (화면에서 이름 칸 옆에 남은 OFF 칩을 두는 것과 같다)
+LEGEND_LABEL = "범례"  # 예전 내보내기 파일의 범례 행. 이 행부터는 근무표가 아니라 설명이라 가져오기에서 읽지 않는다
 HEADER_SCAN_ROWS = 10  # 제목 줄 등이 위에 있어도 머리글 행(일자 숫자)을 찾는 범위
-TITLE_ROWS = 1
-HEADER_ROWS = 2  # 일자 + 요일
-NAME_COLS = 2  # 이름 · 직급
-TOTALS = [("D", Duty.D), ("E", Duty.E), ("N", Duty.N), ("OFF", Duty.O), ("AL", Duty.AL)]
 # 엑셀 코드 → 듀티 제안값. 나머지는 사용자가 매핑
-SUMMARY_ROW = re.compile(r"[DEN] 인원 \(필요 \d+\)")  # 내보내기 파일의 인원 합계 행
+SUMMARY_ROW = re.compile(r"[DEN] 인원( \(필요 \d+\))?")  # 내보내기 파일의 인원 행 (예전 파일은 "(필요 n)"이 붙는다)
 ALIASES = {"OFF": Duty.O, "/": Duty.O, "휴": Duty.O, "DAY": Duty.D, "EVE": Duty.E, "NIGHT": Duty.N}
 
 
@@ -41,28 +37,27 @@ def export_schedule(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> 
     m = members.require_head(db, user_id)
     s = schedules.find(db, m, schedule_id)
     r = schedules.roster(db, s)
-    ward = db.get(Ward, m.ward_id)
     wb = Workbook()
     ws = wb.active
     ws.title = s.year_month
-    _write_schedule(ws, r, f"{r.month.year}년 {r.month.month}월 근무표 · {ward.ward_name}")
+    _write_schedule(ws, r)
     # 내보내기는 정보 유출 경로이므로 감사 로그 필수
     audit.log(db, m.ward_id, user_id, "SCHEDULE_EXPORTED", "SCHEDULE", s.id)
     return _save(wb), f"schedule-{s.year_month}.xlsx"
 
 
-def _write_schedule(ws, r, title: str) -> None:
-    """제목 · 일자/요일 머리글 · 간호사 행(직급, 합계 열) · 날짜별 인원 행 · 범례. A4 가로 한 장 인쇄"""
+def _write_schedule(ws, r) -> None:
+    """화면의 월간 근무표와 같은 구성, 근무표만: 이름 · 남은 OFF · 일자(위 줄 요일) · 총 OFF, 아랫줄 날짜별 D/E/N 인원. A4 가로 한 장 인쇄"""
     days = r.days()
     first_day = NAME_COLS + 1
     last_day = NAME_COLS + len(days)
-    last_col = last_day + len(TOTALS)
+    total_col = last_day + 1
     side = Side(style="thin", color=LINE)
     box = Border(left=side, right=side, top=side, bottom=side)
     center = Alignment(horizontal="center", vertical="center")
 
-    def style(c, fill=None, ink="000000", bold=False, size=11, align=center):
-        c.border, c.alignment, c.font = box, align, Font(bold=bold, color=ink, size=size)
+    def style(c, fill=None, ink="000000", bold=False, align=center, border=box):
+        c.border, c.alignment, c.font = border, align, Font(bold=bold, color=ink, size=11)
         if fill:
             c.fill = PatternFill("solid", fgColor=fill)
 
@@ -70,40 +65,34 @@ def _write_schedule(ws, r, title: str) -> None:
         # 공휴일은 요일과 상관없이 일요일과 같은 색
         return SUN if d in r.holidays or d.weekday() == 6 else SAT if d.weekday() == 5 else None
 
-    ws.cell(1, 1, title)
-    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=last_col)
-    ws.cell(1, 1).font, ws.cell(1, 1).alignment = Font(bold=True, size=16), Alignment(horizontal="left", vertical="center")
-    ws.row_dimensions[1].height = 30
-
-    head, week = TITLE_ROWS + 1, TITLE_ROWS + 2
-    for col, label in enumerate(["이름", "직급"], 1):
-        ws.cell(head, col, label)
-        ws.merge_cells(start_row=head, start_column=col, end_row=week, end_column=col)
-    for i, label in enumerate(t[0] for t in TOTALS):
-        col = last_day + 1 + i
-        ws.cell(head, col, label)
-        ws.merge_cells(start_row=head, start_column=col, end_row=week, end_column=col)
+    # 머리글 2줄: 위 줄 요일, 아래 줄 날짜 (화면과 같은 순서). 가져오기는 첫 칸이 "이름"이고 날짜 숫자가 있는 줄을 머리글로 찾으므로
+    # 이름·남은 OFF·총 OFF 글자는 날짜 줄에 두고(세로로 병합하면 글자가 윗줄로 올라간다), 두 칸 사이 선은 바탕색으로 칠해 한 칸처럼 보이게 한다
+    week, head = 1, 2
     for i, d in enumerate(days):
-        ws.cell(head, first_day + i, d.day)  # 가져오기가 일자 숫자로 열을 찾는다
         ws.cell(week, first_day + i, WEEKDAYS[d.weekday()])
-    for row in (head, week):
-        for col in range(1, last_col + 1):
-            c = ws.cell(row, col)
-            tone = day_tone(days[col - first_day]) if first_day <= col <= last_day else None
-            style(c, *(tone or (HEAD_FILL, "000000")), bold=True)
+        ws.cell(head, first_day + i, d.day)
+    for col, label in ((1, "이름"), (2, "남은 OFF"), (total_col, "총 OFF")):
+        ws.cell(head, col, label)
+    for col in range(1, total_col + 1):
+        in_days = first_day <= col <= last_day
+        tone = day_tone(days[col - first_day]) if in_days else None
+        fill, ink = tone or (HEAD_FILL, "000000")
+        seam = Side(style="thin", color=fill)  # 두 칸 사이 선은 바탕색으로 칠해 한 칸처럼 보이게 한다
+        style(ws.cell(week, col), fill, ink, bold=True, border=box if in_days else Border(left=side, right=side, top=side, bottom=seam))
+        style(ws.cell(head, col), fill, ink, bold=True, border=box if in_days else Border(left=side, right=side, top=seam, bottom=side))
 
     for n in r.nurses:
         row = [r.cell(n.id, d) for d in days]
-        position = ("수간호사" if n.role == Role.HEAD_NURSE else "간호조무사"
-                    if n.staff_type == StaffType.NURSING_ASSISTANT else POSITION.get(n.duty_role, "간호사"))
-        ws.append([n.name, position]
-                  + [str(x) if x else None for x in row] + [row.count(duty) for _, duty in TOTALS])
+        offs = row.count(Duty.O)
+        target = validator.off_target(r, n)
+        ws.append([n.name, max(target - offs, 0)] + [str(x) if x else None for x in row] + [offs])
         line = ws.max_row
         # openpyxl은 "="로 시작하는 문자열을 수식으로 저장한다. 이름은 항상 텍스트로 (수식 주입 방지)
         ws.cell(line, 1).data_type = "s"
-        for col in range(1, last_col + 1):
-            style(ws.cell(line, col), bold=col == 1, align=Alignment(horizontal="left" if col == 1 else "center",
-                                                                       vertical="center", indent=1 if col == 1 else 0))
+        for col in range(1, total_col + 1):
+            style(ws.cell(line, col), bold=col == 1 or col == 2 or col == total_col,
+                  ink="F04452" if col == total_col and offs > target else "000000",  # 총 OFF가 목표를 넘으면 빨강
+                  align=Alignment(horizontal="left" if col == 1 else "center", vertical="center", indent=1 if col == 1 else 0))
         for i, (x, d) in enumerate(zip(row, days)):
             c = ws.cell(line, first_day + i)
             tone = day_tone(d)
@@ -117,35 +106,24 @@ def _write_schedule(ws, r, title: str) -> None:
 
     for duty in (Duty.D, Duty.E, Duty.N):
         need = r.rules.required(duty)
-        ws.append([f"{duty} 인원 (필요 {need})", None]
-                  + [sum(1 for n in r.nurses if n.staff_type == StaffType.NURSE
-                         and r.cell(n.id, d) == duty and n.affiliated(d)) for d in days])
+        # 인원은 간호사만 센다 (간호조무사는 필요 인원에 넣지 않는다)
+        counts = [sum(1 for n in r.nurses if n.staff_type == StaffType.NURSE and r.cell(n.id, d) == duty and n.affiliated(d))
+                  for d in days]
+        ws.append([f"{duty} 인원", None] + [f"{c}/{need}" for c in counts])  # 화면 아랫줄과 같은 "실제/필요"
         line = ws.max_row
         ws.merge_cells(start_row=line, start_column=1, end_row=line, end_column=NAME_COLS)
-        for col in range(1, last_col + 1):
-            c = ws.cell(line, col)
-            short = first_day <= col <= last_day and c.value < need
-            style(c, "FFEBEE" if short else HEAD_FILL, "F04452" if short else "000000", bold=col == 1 or short)
+        for col in range(1, total_col + 1):
+            short = first_day <= col <= last_day and counts[col - first_day] < need
+            style(ws.cell(line, col), "FFEBEE" if short else HEAD_FILL, "F04452" if short else "000000", bold=col == 1 or short)
         ws.row_dimensions[line].height = 20
 
-    legend = ws.max_row + 2
-    ws.cell(legend, 1, LEGEND_LABEL).font = Font(bold=True)
-    for i, (duty, label) in enumerate(LEGEND):
-        c = ws.cell(legend, 2 + 2 * i, label)
-        ws.merge_cells(start_row=legend, start_column=2 + 2 * i, end_row=legend, end_column=3 + 2 * i)
-        solid = duty in SOLID
-        c.fill = PatternFill("solid", fgColor=SOLID.get(duty, OFF_FILL))
-        c.font = Font(bold=solid, color="FFFFFF" if solid else OFF_INK)
-        c.alignment = center
-
     ws.column_dimensions["A"].width = 14
-    ws.column_dimensions["B"].width = 11
+    ws.column_dimensions["B"].width = 10
     for col in range(first_day, last_day + 1):
         ws.column_dimensions[get_column_letter(col)].width = 4.6
-    for col in range(last_day + 1, last_col + 1):
-        ws.column_dimensions[get_column_letter(col)].width = 5.5
-    ws.freeze_panes = ws.cell(week + 1, first_day)  # 이름·직급과 일자 머리글은 스크롤해도 보인다
-    ws.print_area = f"A1:{get_column_letter(last_col)}{legend}"
+    ws.column_dimensions[get_column_letter(total_col)].width = 8
+    ws.freeze_panes = ws.cell(head + 1, first_day)  # 이름·남은 OFF와 일자 머리글은 스크롤해도 보인다
+    ws.print_area = f"A1:{get_column_letter(total_col)}{ws.max_row}"
     ws.page_setup.orientation = "landscape"
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = ws.page_setup.fitToHeight = 1
