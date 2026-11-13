@@ -48,6 +48,9 @@ def create(db: Session, user_id: uuid.UUID, f: dict) -> dict:
     m = members.require_head(db, user_id)
     f = dict(f)
     f.setdefault("staff_type", StaffType.NURSE)
+    f["skill_level"] = recommended_skill(f["career_months"], f["affiliation_start"])
+    f["affiliation_end"] = None
+    f["preceptor_of"] = None
     f = _experience(f, creating=True)
     if db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.name == f["name"],
                                         Nurse.joined_at >= date(f["joined_year"], 1, 1),
@@ -188,6 +191,18 @@ def experience_values(joined_year: int, career_months: int, skill_level: int) ->
     if career_months <= 3 and skill_level not in (1, 2):
         raise bad_request("VALIDATION_ERROR", "경력 3개월 이하는 숙련도 1~2만 선택할 수 있습니다", "skillLevel")
     return career_months, skill_level
+
+
+def recommended_skill(career_months: int, affiliation_start: date) -> int:
+    """신규 등록 숙련도: 전체 경력이 짧으면 1~2, 경력자는 병동 적응 기간 동안 2, 이후 3."""
+    today = today_kst()
+    ward_months = max(0, (today.year - affiliation_start.year) * 12 + today.month - affiliation_start.month
+                      - (today.day < affiliation_start.day))
+    if career_months <= 3:
+        return 1
+    if career_months <= 6 or ward_months <= 3:
+        return 2
+    return 3
 
 
 def _experience(changes: dict, joined_year: int | None = None, current_career: int | None = None,

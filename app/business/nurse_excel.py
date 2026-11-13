@@ -15,7 +15,7 @@ from app.domain.model import DutyRole, NurseStatus, StaffType
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_ROWS = 500
 HEADERS = ("이름", "입사연도", "직종", "직급", "프리셉터", "총 경력(년)", "총 경력(개월)",
-           "숙련도", "상태", "소속 시작일")
+           "상태", "소속 시작일")
 REQUIRED_HEADERS = HEADERS
 ROLE_ALIASES = {
     "일반": DutyRole.GENERAL, "GENERAL": DutyRole.GENERAL,
@@ -47,21 +47,21 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
     ws.title = "간호사 등록"
     ws.append(HEADERS)
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:J{MAX_ROWS + 1}"
+    ws.auto_filter.ref = f"A1:I{MAX_ROWS + 1}"
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="4472C4")
-    widths = (16, 12, 20, 16, 14, 14, 16, 10, 14, 16)
-    for column, width in zip("ABCDEFGHIJ", widths):
+    widths = (16, 12, 20, 16, 14, 14, 16, 14, 16)
+    for column, width in zip("ABCDEFGHI", widths):
         ws.column_dimensions[column].width = width
     for column, values in (("C", '"NURSE,NURSING_ASSISTANT"'),
                            ("D", '"GENERAL,CHARGE,NEW,NIGHT_ONLY"'), ("E", '"Y,N"'),
-                           ("H", '"1,2,3,4,5"'), ("I", '"ACTIVE,PREGNANT,ON_LEAVE"')):
+                           ("H", '"ACTIVE,PREGNANT,ON_LEAVE"')):
         validation = DataValidation(type="list", formula1=values, allow_blank=False)
         ws.add_data_validation(validation)
         validation.add(f"{column}2:{column}{MAX_ROWS + 1}")
     for row in range(2, MAX_ROWS + 2):
-        ws.cell(row, 10).number_format = "yyyy-mm-dd"
+        ws.cell(row, 9).number_format = "yyyy-mm-dd"
 
     guide = wb.create_sheet("작성 안내")
     guide.append(["항목", "입력 방법", "예시"])
@@ -73,7 +73,6 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
         ("프리셉터", "Y 또는 N", "N"),
         ("총 경력(년)", "필수, 0 이상의 정수", "3"),
         ("총 경력(개월)", "필수, 0~11 정수", "6"),
-        ("숙련도", "필수, 1~5 정수", "3"),
         ("상태", "ACTIVE/PREGNANT/ON_LEAVE", "ACTIVE"),
         ("소속 시작일", "YYYY-MM-DD", "2026-01-01"),
     ]
@@ -179,19 +178,16 @@ def _parse(values: dict) -> dict:
     if not 0 <= remaining_months <= 11:
         raise RowError("총 경력(개월)", "0~11 범위여야 합니다")
     career_months = career_years * 12 + remaining_months
-    skill_level = _integer(values["숙련도"], "숙련도")
-    if not 1 <= skill_level <= 5:
-        raise RowError("숙련도", "1~5 범위여야 합니다")
     try:
-        career_months, skill_level = nurses.experience_values(joined_year, career_months, skill_level)
+        skill_level = nurses.recommended_skill(career_months, _date(values["소속 시작일"], "소속 시작일"))
+        career_months, _ = nurses.experience_values(joined_year, career_months, skill_level)
     except ApiException as error:
         api_field = error.field_errors[0]["field"] if error.field_errors else None
         field = "숙련도" if api_field == "skillLevel" else "총 경력"
         raise RowError(field, error.message) from None
     start = _date(values["소속 시작일"], "소속 시작일")
     return {"name": name, "staff_type": staff_type, "duty_role": role, "status": status, "joined_year": joined_year,
-            "is_preceptor": is_preceptor, "career_months": career_months, "skill_level": skill_level,
-            "affiliation_start": start, "affiliation_end": None, "preceptor_of": None}
+            "is_preceptor": is_preceptor, "career_months": career_months, "affiliation_start": start}
 
 
 def _required_text(value, field: str) -> str:

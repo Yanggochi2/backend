@@ -8,10 +8,13 @@ def test_register_and_validate():
     err(h("POST", "/wards/me/nurses", {**NURSE, "name": "간호사00"}), 409, "NURSE_ALREADY_EXISTS")
     err(h("POST", "/wards/me/nurses", {**NURSE, "name": "x", "skillLevel": 6}), 400, "VALIDATION_ERROR")
     err(h("POST", "/wards/me/nurses", {**NURSE, "name": "x", "status": "RETIRED"}), 422, "BUSINESS_RULE_VIOLATION")
-    err(h("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "isPreceptor": True, "preceptorOf": [a]}), 422, "INVALID_PRECEPTEE")
+    err(h("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "isPreceptor": True, "preceptorOf": [a]}),
+        400, "VALIDATION_ERROR")
     [new] = add_nurses(h, 1, "신입", dutyRole="NEW")
-    pre = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "dutyRole": "PRECEPTOR", "preceptorOf": [new]})
-    assert pre["preceptorOf"] == [new]
+    pre = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "dutyRole": "PRECEPTOR"})
+    err(h("PATCH", f"/wards/me/nurses/{pre['id']}", {"preceptorOf": [a]}), 422, "INVALID_PRECEPTEE")
+    patched = h.data("PATCH", f"/wards/me/nurses/{pre['id']}", {"preceptorOf": [new]})["nurse"]
+    assert patched["preceptorOf"] == [new]
 
 
 def test_patch_partial_with_version():
@@ -97,16 +100,12 @@ def test_experience_validation_and_nursing_assistant():
     year = today_kst().year
     without_career = {
         "name": "경력누락", "dutyRole": "NEW", "status": "ACTIVE",
-        "joinedYear": year, "skillLevel": 1, "affiliationStart": f"{year}-01-01",
+        "joinedYear": year, "affiliationStart": f"{year}-01-01",
     }
     err(h("POST", "/wards/me/nurses", without_career), 400, "VALIDATION_ERROR")
-    err(h("POST", "/wards/me/nurses", {
-        "name": "숙련도누락", "dutyRole": "NEW", "status": "ACTIVE",
-        "joinedYear": year, "careerMonths": 3, "affiliationStart": f"{year}-01-01",
-    }), 400, "VALIDATION_ERROR")
     junior = h.data("POST", "/wards/me/nurses", {
         "name": "신규3개월", "staffType": "NURSE", "dutyRole": "NEW", "status": "ACTIVE",
-        "joinedYear": year, "careerMonths": 3, "skillLevel": 1, "affiliationStart": f"{year}-01-01",
+        "joinedYear": year, "careerMonths": 3, "affiliationStart": f"{year}-01-01",
     })
     assert junior["careerMonths"] == 3 and junior["skillLevel"] == 1
     err(h("PATCH", f"/wards/me/nurses/{junior['id']}", {"skillLevel": 4}), 400, "VALIDATION_ERROR")
@@ -114,6 +113,11 @@ def test_experience_validation_and_nursing_assistant():
         "name": "숙련도오류", "dutyRole": "NEW", "status": "ACTIVE", "joinedYear": year,
         "careerMonths": 3, "skillLevel": 4, "affiliationStart": f"{year}-01-01",
     }), 400, "VALIDATION_ERROR")
+    experienced_new_to_ward = h.data("POST", "/wards/me/nurses", {
+        "name": "병동신규", "dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": year - 5,
+        "careerMonths": 60, "affiliationStart": today_kst().isoformat(),
+    })
+    assert experienced_new_to_ward["skillLevel"] == 2
     err(h("POST", "/wards/me/nurses", {
         **NURSE, "name": "경력오류", "joinedYear": year, "careerMonths": 120,
     }), 400, "VALIDATION_ERROR")
@@ -128,8 +132,8 @@ def test_experience_validation_and_nursing_assistant():
 def test_delete_unlinks_only_removed_preceptee():
     h = ward_head()
     gone, kept = add_nurses(h, 2, "신입", dutyRole="NEW")
-    pre = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "dutyRole": "PRECEPTOR",
-                                              "preceptorOf": [gone, kept]})
+    pre = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "dutyRole": "PRECEPTOR"})
+    pre = h.data("PATCH", f"/wards/me/nurses/{pre['id']}", {"preceptorOf": [gone, kept]})["nurse"]
     assert h("DELETE", f"/wards/me/nurses/{gone}").status_code == 204
     after = h.data("GET", f"/wards/me/nurses/{pre['id']}")
     assert after["preceptorOf"] == [kept] and after["isPreceptor"]
@@ -139,7 +143,8 @@ def test_delete_unlinks_only_removed_preceptee():
 
 def test_delete_keeps_earlier_affiliation_end():
     h = ward_head()
-    [a] = add_nurses(h, 1, affiliationEnd="2025-06-30")
+    [a] = add_nurses(h, 1)
+    h.data("PATCH", f"/wards/me/nurses/{a}", {"affiliationEnd": "2025-06-30"})
     assert h("DELETE", f"/wards/me/nurses/{a}").status_code == 204
     gone = next(x for x in h.data("GET", "/wards/me/nurses?includeRetired=true") if x["id"] == a)
     assert gone["affiliationEnd"] == "2025-06-30"
