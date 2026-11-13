@@ -54,10 +54,11 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
     widths = (16, 12, 20, 16, 14, 14, 16, 14, 16)
     for column, width in zip("ABCDEFGHI", widths):
         ws.column_dimensions[column].width = width
-    for column, values in (("C", '"NURSE,NURSING_ASSISTANT"'),
-                           ("D", '"GENERAL,CHARGE,NEW,NIGHT_ONLY"'), ("E", '"Y,N"'),
-                           ("H", '"ACTIVE,PREGNANT,ON_LEAVE"')):
-        validation = DataValidation(type="list", formula1=values, allow_blank=False)
+    for column, values, allow_blank in (("C", '"NURSE,NURSING_ASSISTANT"', False),
+                                        ("D", '"GENERAL,CHARGE,NEW,NIGHT_ONLY"', True),
+                                        ("E", '"Y,N"', True),
+                                        ("H", '"ACTIVE,PREGNANT,ON_LEAVE"', False)):
+        validation = DataValidation(type="list", formula1=values, allow_blank=allow_blank)
         ws.add_data_validation(validation)
         validation.add(f"{column}2:{column}{MAX_ROWS + 1}")
     for row in range(2, MAX_ROWS + 2):
@@ -69,8 +70,8 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
         ("이름", "필수, 50자 이하", "홍길동"),
         ("입사연도", f"1900~{today_kst().year}", "2022"),
         ("직종", "NURSE/NURSING_ASSISTANT", "NURSE"),
-        ("직급", "GENERAL/CHARGE/NEW/NIGHT_ONLY", "GENERAL"),
-        ("프리셉터", "Y 또는 N", "N"),
+        ("직급", "간호사는 GENERAL/CHARGE/NEW/NIGHT_ONLY, 간호조무사는 비움", "GENERAL"),
+        ("프리셉터", "간호사는 Y 또는 N, 간호조무사는 비움", "N"),
         ("총 경력(년)", "필수, 0 이상의 정수", "3"),
         ("총 경력(개월)", "필수, 0~11 정수", "6"),
         ("상태", "ACTIVE/PREGNANT/ON_LEAVE", "ACTIVE"),
@@ -162,13 +163,23 @@ def _parse(values: dict) -> dict:
     name = _required_text(values["이름"], "이름")
     if len(name) > 50:
         raise RowError("이름", "50자 이하여야 합니다")
-    role = _enum(values["직급"], "직급", ROLE_ALIASES)
     staff_type = _enum(values["직종"], "직종", STAFF_ALIASES)
+    if staff_type == StaffType.NURSING_ASSISTANT:
+        if values["직급"] not in (None, ""):
+            role = _enum(values["직급"], "직급", ROLE_ALIASES)
+            if role != DutyRole.GENERAL:
+                raise RowError("직급", "간호조무사는 비워 두거나 GENERAL만 입력할 수 있습니다")
+        role = DutyRole.GENERAL
+        if _boolean(values["프리셉터"], "프리셉터"):
+            raise RowError("프리셉터", "간호조무사는 프리셉터로 등록할 수 없습니다")
+        is_preceptor = False
+    else:
+        role = _enum(values["직급"], "직급", ROLE_ALIASES)
+        is_preceptor = _boolean(values["프리셉터"], "프리셉터")
     status = _enum(values["상태"], "상태", STATUS_ALIASES)
     joined_year = _integer(values["입사연도"], "입사연도")
     if not 1900 <= joined_year <= today_kst().year:
         raise RowError("입사연도", f"1900~{today_kst().year} 범위여야 합니다")
-    is_preceptor = _boolean(values["프리셉터"], "프리셉터")
     if role == DutyRole.PRECEPTOR:
         role, is_preceptor = DutyRole.GENERAL, True
     career_years = _integer(values["총 경력(년)"], "총 경력(년)")

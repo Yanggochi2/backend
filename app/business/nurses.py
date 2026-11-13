@@ -50,7 +50,7 @@ def create(db: Session, user_id: uuid.UUID, f: dict) -> dict:
     f.setdefault("staff_type", StaffType.NURSE)
     f["skill_level"] = recommended_skill(f["career_months"], f["affiliation_start"])
     f["affiliation_end"] = None
-    f["preceptor_of"] = None
+    f["preceptor_of"] = f.get("preceptor_of") or []
     f = _experience(f, creating=True)
     if db.scalar(select(Nurse.id).where(Nurse.ward_id == m.ward_id, Nurse.name == f["name"],
                                         Nurse.joined_at >= date(f["joined_year"], 1, 1),

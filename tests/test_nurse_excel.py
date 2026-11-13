@@ -36,7 +36,7 @@ def test_download_template_and_import_nurses_atomically():
         "이름", "입사연도", "직종", "직급", "프리셉터", "총 경력(년)", "총 경력(개월)", "상태", "소속 시작일"]
     _put(sheet, 2, ["김차지", year - 6, "NURSE", "CHARGE", "N", 6, 0, "ACTIVE", "2025-01-01"])
     _put(sheet, 3, ["이프리", year - 5, "NURSE", "GENERAL", "Y", 5, 0, "ACTIVE", "2025-01-01"])
-    _put(sheet, 4, ["박조무", year - 1, "NURSING_ASSISTANT", "GENERAL", "N", 1, 0, "ACTIVE",
+    _put(sheet, 4, ["박조무", year - 1, "NURSING_ASSISTANT", None, None, 1, 0, "ACTIVE",
                     "2025-01-01"])
 
     result = h.data("POST", "/wards/me/nurses/import.xlsx",
@@ -46,6 +46,19 @@ def test_download_template_and_import_nurses_atomically():
     assert created["김차지"]["dutyRole"] == "CHARGE"
     assert created["이프리"]["dutyRole"] == "GENERAL" and created["이프리"]["isPreceptor"]
     assert created["박조무"]["staffType"] == "NURSING_ASSISTANT" and created["박조무"]["skillLevel"] == 3
+
+
+def test_nursing_assistant_excel_rejects_hidden_nurse_only_fields():
+    h = ward_head()
+    workbook = _template(h)
+    year = today_kst().year - 1
+    _put(workbook["간호사 등록"], 2,
+         ["잘못된조무", year, "NURSING_ASSISTANT", "CHARGE", "Y", 1, 0, "ACTIVE", "2025-01-01"])
+    response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
+    details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
+    assert details["errors"] == [{
+        "row": 2, "field": "직급", "reason": "간호조무사는 비워 두거나 GENERAL만 입력할 수 있습니다",
+    }]
 
 
 def test_invalid_import_rolls_back_all_rows():

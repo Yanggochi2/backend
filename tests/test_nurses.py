@@ -9,12 +9,13 @@ def test_register_and_validate():
     err(h("POST", "/wards/me/nurses", {**NURSE, "name": "x", "skillLevel": 6}), 400, "VALIDATION_ERROR")
     err(h("POST", "/wards/me/nurses", {**NURSE, "name": "x", "status": "RETIRED"}), 422, "BUSINESS_RULE_VIOLATION")
     err(h("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "isPreceptor": True, "preceptorOf": [a]}),
-        400, "VALIDATION_ERROR")
+        422, "INVALID_PRECEPTEE")
     [new] = add_nurses(h, 1, "신입", dutyRole="NEW")
-    pre = h.data("POST", "/wards/me/nurses", {**NURSE, "name": "프리", "dutyRole": "PRECEPTOR"})
-    err(h("PATCH", f"/wards/me/nurses/{pre['id']}", {"preceptorOf": [a]}), 422, "INVALID_PRECEPTEE")
-    patched = h.data("PATCH", f"/wards/me/nurses/{pre['id']}", {"preceptorOf": [new]})["nurse"]
-    assert patched["preceptorOf"] == [new]
+    pre = h.data("POST", "/wards/me/nurses", {
+        **NURSE, "name": "프리", "dutyRole": "PRECEPTOR", "isPreceptor": True,
+        "preceptorOf": [new], "skillLevel": 5,
+    })
+    assert pre["preceptorOf"] == [new] and pre["skillLevel"] == 3
 
 
 def test_patch_partial_with_version():
@@ -109,10 +110,11 @@ def test_experience_validation_and_nursing_assistant():
     })
     assert junior["careerMonths"] == 3 and junior["skillLevel"] == 1
     err(h("PATCH", f"/wards/me/nurses/{junior['id']}", {"skillLevel": 4}), 400, "VALIDATION_ERROR")
-    err(h("POST", "/wards/me/nurses", {
+    junior_with_frontend_skill = h.data("POST", "/wards/me/nurses", {
         "name": "숙련도오류", "dutyRole": "NEW", "status": "ACTIVE", "joinedYear": year,
         "careerMonths": 3, "skillLevel": 4, "affiliationStart": f"{year}-01-01",
-    }), 400, "VALIDATION_ERROR")
+    })
+    assert junior_with_frontend_skill["skillLevel"] == 1
     experienced_new_to_ward = h.data("POST", "/wards/me/nurses", {
         "name": "병동신규", "dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": year - 5,
         "careerMonths": 60, "affiliationStart": today_kst().isoformat(),
@@ -122,9 +124,16 @@ def test_experience_validation_and_nursing_assistant():
         **NURSE, "name": "경력오류", "joinedYear": year, "careerMonths": 120,
     }), 400, "VALIDATION_ERROR")
     assistant = h.data("POST", "/wards/me/nurses", {
-        **NURSE, "name": "김조무", "staffType": "NURSING_ASSISTANT",
+        "name": "김조무", "staffType": "NURSING_ASSISTANT", "status": "ACTIVE",
+        "joinedYear": year, "careerMonths": 3, "skillLevel": 2,
+        "affiliationStart": f"{year}-01-01",
     })
     assert assistant["staffType"] == "NURSING_ASSISTANT"
+    assert assistant["dutyRole"] == "GENERAL" and not assistant["isPreceptor"]
+    assert assistant["skillLevel"] == 1
+    err(h("POST", "/wards/me/nurses", {
+        **NURSE, "name": "잘못된조무", "staffType": "NURSING_ASSISTANT", "dutyRole": "CHARGE",
+    }), 422, "INVALID_STAFF_ROLE")
     result = h.data("GET", "/wards/me/nurses?staffType=NURSING_ASSISTANT")
     assert [row["id"] for row in result] == [assistant["id"]]
 
