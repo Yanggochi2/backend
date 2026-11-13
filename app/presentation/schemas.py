@@ -80,14 +80,14 @@ class NurseFields(Body):
 class NurseCreate(NurseFields):
     name: Name
     staff_type: StaffType = StaffType.NURSE
-    duty_role: DutyRole
+    duty_role: DutyRole = DutyRole.GENERAL
     status: NurseStatus
     joined_year: StrictInt
     is_preceptor: StrictBool = False
-    career_months: int | None = Field(None, ge=0)
+    career_months: int = Field(ge=0)
+    # 현재 프론트 폼과의 호환을 위해 받되, 신규 등록 숙련도는 서버가 다시 계산한다.
     skill_level: int | None = Field(None, ge=1, le=5)
     affiliation_start: date
-    affiliation_end: date | None = None
     preceptor_of: list[uuid.UUID] | None = None
 
 

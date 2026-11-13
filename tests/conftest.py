@@ -83,8 +83,7 @@ def member(h: Api, name="간호사") -> tuple[Api, str]:
 
 
 NURSE = {"dutyRole": "GENERAL", "status": "ACTIVE", "joinedYear": today_kst().year - 1,
-         "careerMonths": 12, "skillLevel": 3,
-         "affiliationStart": "2025-01-01"}
+         "careerMonths": 12, "affiliationStart": "2025-01-01"}
 
 
 def add_nurses(h: Api, count: int, prefix="간호사", **fields) -> list[str]:

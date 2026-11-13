@@ -14,8 +14,9 @@ from app.domain.model import DutyRole, NurseStatus, StaffType
 
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAX_ROWS = 500
-REQUIRED_HEADERS = ("이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일")
-HEADERS = REQUIRED_HEADERS + ("직종",)
+HEADERS = ("이름", "입사연도", "직종", "직급", "프리셉터", "총 경력(년)", "총 경력(개월)",
+           "상태", "소속 시작일")
+REQUIRED_HEADERS = HEADERS
 ROLE_ALIASES = {
     "일반": DutyRole.GENERAL, "GENERAL": DutyRole.GENERAL,
     "차지": DutyRole.CHARGE, "CHARGE": DutyRole.CHARGE,
@@ -46,35 +47,35 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
     ws.title = "간호사 등록"
     ws.append(HEADERS)
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:J{MAX_ROWS + 1}"
+    ws.auto_filter.ref = f"A1:I{MAX_ROWS + 1}"
     for cell in ws[1]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="4472C4")
-    widths = (16, 16, 14, 12, 14, 12, 10, 16, 16, 20)
-    for column, width in zip("ABCDEFGHIJ", widths):
+    widths = (16, 12, 20, 16, 14, 14, 16, 14, 16)
+    for column, width in zip("ABCDEFGHI", widths):
         ws.column_dimensions[column].width = width
-    for column, values in (("B", '"GENERAL,CHARGE,NEW,NIGHT_ONLY"'),
-                           ("C", '"ACTIVE,PREGNANT,ON_LEAVE"'), ("E", '"Y,N"'),
-                           ("J", '"NURSE,NURSING_ASSISTANT"')):
-        validation = DataValidation(type="list", formula1=values, allow_blank=False)
+    for column, values, allow_blank in (("C", '"NURSE,NURSING_ASSISTANT"', False),
+                                        ("D", '"GENERAL,CHARGE,NEW,NIGHT_ONLY"', True),
+                                        ("E", '"Y,N"', True),
+                                        ("H", '"ACTIVE,PREGNANT,ON_LEAVE"', False)):
+        validation = DataValidation(type="list", formula1=values, allow_blank=allow_blank)
         ws.add_data_validation(validation)
         validation.add(f"{column}2:{column}{MAX_ROWS + 1}")
     for row in range(2, MAX_ROWS + 2):
-        ws.cell(row, 8).number_format = ws.cell(row, 9).number_format = "yyyy-mm-dd"
+        ws.cell(row, 9).number_format = "yyyy-mm-dd"
 
     guide = wb.create_sheet("작성 안내")
     guide.append(["항목", "입력 방법", "예시"])
     guide_rows = [
         ("이름", "필수, 50자 이하", "홍길동"),
-        ("직무역할", "GENERAL/CHARGE/NEW/NIGHT_ONLY", "GENERAL"),
-        ("상태", "ACTIVE/PREGNANT/ON_LEAVE", "ACTIVE"),
         ("입사연도", f"1900~{today_kst().year}", "2022"),
-        ("프리셉터", "Y 또는 N", "N"),
-        ("경력개월", "0 이상의 정수", "36"),
-        ("숙련도", "1~5 정수", "3"),
-        ("소속시작일", "YYYY-MM-DD", "2026-01-01"),
-        ("소속종료일", "선택, YYYY-MM-DD", ""),
-        ("직종", "NURSE 또는 NURSING_ASSISTANT, 비우면 NURSE", "NURSE"),
+        ("직종", "NURSE/NURSING_ASSISTANT", "NURSE"),
+        ("직급", "간호사는 GENERAL/CHARGE/NEW/NIGHT_ONLY, 간호조무사는 비움", "GENERAL"),
+        ("프리셉터", "간호사는 Y 또는 N, 간호조무사는 비움", "N"),
+        ("총 경력(년)", "필수, 0 이상의 정수", "3"),
+        ("총 경력(개월)", "필수, 0~11 정수", "6"),
+        ("상태", "ACTIVE/PREGNANT/ON_LEAVE", "ACTIVE"),
+        ("소속 시작일", "YYYY-MM-DD", "2026-01-01"),
     ]
     for row in guide_rows:
         guide.append(row)
@@ -162,33 +163,42 @@ def _parse(values: dict) -> dict:
     name = _required_text(values["이름"], "이름")
     if len(name) > 50:
         raise RowError("이름", "50자 이하여야 합니다")
-    role = _enum(values["직무역할"], "직무역할", ROLE_ALIASES)
-    staff_type = (_enum(values.get("직종"), "직종", STAFF_ALIASES)
-                  if values.get("직종") not in (None, "") else StaffType.NURSE)
+    staff_type = _enum(values["직종"], "직종", STAFF_ALIASES)
+    if staff_type == StaffType.NURSING_ASSISTANT:
+        if values["직급"] not in (None, ""):
+            role = _enum(values["직급"], "직급", ROLE_ALIASES)
+            if role != DutyRole.GENERAL:
+                raise RowError("직급", "간호조무사는 비워 두거나 GENERAL만 입력할 수 있습니다")
+        role = DutyRole.GENERAL
+        if _boolean(values["프리셉터"], "프리셉터"):
+            raise RowError("프리셉터", "간호조무사는 프리셉터로 등록할 수 없습니다")
+        is_preceptor = False
+    else:
+        role = _enum(values["직급"], "직급", ROLE_ALIASES)
+        is_preceptor = _boolean(values["프리셉터"], "프리셉터")
     status = _enum(values["상태"], "상태", STATUS_ALIASES)
     joined_year = _integer(values["입사연도"], "입사연도")
     if not 1900 <= joined_year <= today_kst().year:
         raise RowError("입사연도", f"1900~{today_kst().year} 범위여야 합니다")
-    is_preceptor = _boolean(values["프리셉터"], "프리셉터")
     if role == DutyRole.PRECEPTOR:
         role, is_preceptor = DutyRole.GENERAL, True
-    career_months = _optional_integer(values["경력개월"], "경력개월")
-    skill_level = _optional_integer(values["숙련도"], "숙련도")
-    if skill_level is not None and not 1 <= skill_level <= 5:
-        raise RowError("숙련도", "1~5 범위여야 합니다")
+    career_years = _integer(values["총 경력(년)"], "총 경력(년)")
+    remaining_months = _integer(values["총 경력(개월)"], "총 경력(개월)")
+    if career_years < 0:
+        raise RowError("총 경력(년)", "0 이상이어야 합니다")
+    if not 0 <= remaining_months <= 11:
+        raise RowError("총 경력(개월)", "0~11 범위여야 합니다")
+    career_months = career_years * 12 + remaining_months
     try:
-        career_months, skill_level = nurses.experience_values(joined_year, career_months, skill_level)
+        skill_level = nurses.recommended_skill(career_months, _date(values["소속 시작일"], "소속 시작일"))
+        career_months, _ = nurses.experience_values(joined_year, career_months, skill_level)
     except ApiException as error:
         api_field = error.field_errors[0]["field"] if error.field_errors else None
-        field = "숙련도" if api_field == "skillLevel" else "경력개월"
+        field = "숙련도" if api_field == "skillLevel" else "총 경력"
         raise RowError(field, error.message) from None
-    start = _date(values["소속시작일"], "소속시작일")
-    end = _date(values["소속종료일"], "소속종료일", optional=True)
-    if end is not None and end < start:
-        raise RowError("소속종료일", "소속시작일보다 빠를 수 없습니다")
+    start = _date(values["소속 시작일"], "소속 시작일")
     return {"name": name, "staff_type": staff_type, "duty_role": role, "status": status, "joined_year": joined_year,
-            "is_preceptor": is_preceptor, "career_months": career_months, "skill_level": skill_level,
-            "affiliation_start": start, "affiliation_end": end, "preceptor_of": None}
+            "is_preceptor": is_preceptor, "career_months": career_months, "affiliation_start": start}
 
 
 def _required_text(value, field: str) -> str:
@@ -212,10 +222,6 @@ def _integer(value, field: str) -> int:
     if isinstance(value, str) and value.strip().isdecimal():
         return int(value.strip())
     raise RowError(field, "정수여야 합니다")
-
-
-def _optional_integer(value, field: str) -> int | None:
-    return None if value in (None, "") else _integer(value, field)
 
 
 def _boolean(value, field: str) -> bool:
