@@ -24,6 +24,8 @@
 | 퇴사 | POST `/wards/me/nurses/{nurseId}/retire` | 수간호사 |
 | 간호사 엑셀 양식 | GET `/wards/me/nurses/import-template.xlsx` | 수간호사 |
 | 간호사 엑셀 일괄 등록 | POST `/wards/me/nurses/import.xlsx` | 수간호사 |
+| 강제 OFF 배정 | PATCH `/wards/me/schedules/{scheduleId}/forced-offs` | 수간호사 |
+| 월별 대시보드 통계 | GET `/wards/me/dashboard?yearMonth=YYYY-MM` | 수간호사 |
 | 차지 목록 | GET `/wards/me/charges` | 수간호사 |
 | 차지 지정·해제 | PUT `/wards/me/nurses/{nurseId}/charge` | 수간호사 |
 | 희망 오프 마감 조회 | GET `/wards/me/off-request-deadlines/{YYYY-MM}` | 병동 구성원 |

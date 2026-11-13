@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.business import audit, members, schedules
 from app.business.common import ApiException, not_found, unprocessable
-from app.domain.model import Duty, DutyRole, Role
+from app.domain.model import Duty, DutyRole, Role, StaffType
 from app.persistence.db import now
 from app.persistence.models import ImportPreview, Ward
 
@@ -94,7 +94,9 @@ def _write_schedule(ws, r, title: str) -> None:
 
     for n in r.nurses:
         row = [r.cell(n.id, d) for d in days]
-        ws.append([n.name, "수간호사" if n.role == Role.HEAD_NURSE else POSITION.get(n.duty_role, "간호사")]
+        position = ("수간호사" if n.role == Role.HEAD_NURSE else "간호조무사"
+                    if n.staff_type == StaffType.NURSING_ASSISTANT else POSITION.get(n.duty_role, "간호사"))
+        ws.append([n.name, position]
                   + [str(x) if x else None for x in row] + [row.count(duty) for _, duty in TOTALS])
         line = ws.max_row
         # openpyxl은 "="로 시작하는 문자열을 수식으로 저장한다. 이름은 항상 텍스트로 (수식 주입 방지)
@@ -116,7 +118,8 @@ def _write_schedule(ws, r, title: str) -> None:
     for duty in (Duty.D, Duty.E, Duty.N):
         need = r.rules.required(duty)
         ws.append([f"{duty} 인원 (필요 {need})", None]
-                  + [sum(1 for n in r.nurses if r.cell(n.id, d) == duty and n.affiliated(d)) for d in days])
+                  + [sum(1 for n in r.nurses if n.staff_type == StaffType.NURSE
+                         and r.cell(n.id, d) == duty and n.affiliated(d)) for d in days])
         line = ws.max_row
         ws.merge_cells(start_row=line, start_column=1, end_row=line, end_column=NAME_COLS)
         for col in range(1, last_col + 1):
@@ -166,11 +169,14 @@ def create_preview(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, data
     # 제목 줄이 위에 있을 수 있어 일자 숫자가 있는 첫 행을 머리글로 본다
     day_cols, header_row = {}, ws.min_row
     for header in ws.iter_rows(min_row=ws.min_row, max_row=ws.min_row + HEADER_SCAN_ROWS - 1):
+        candidate = {}
         for c in header:
             t = _text(c.value).removesuffix("일")
             if t.isdigit() and 1 <= int(t) <= len(r.days()):
-                day_cols[c.column] = r.month.replace(day=int(t))
-        if day_cols:
+                candidate[c.column] = r.month.replace(day=int(t))
+        # 제목에 월 숫자가 따로 들어간 경우를 머리글로 오인하지 않도록 이름 열과 여러 날짜를 함께 확인한다.
+        if _text(header[0].value) in ("이름", "간호사", "성명") and len(candidate) >= 2:
+            day_cols = candidate
             header_row = header[0].row
             break
     if not day_cols:

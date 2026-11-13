@@ -1,7 +1,7 @@
 """API-SCH-09~12 엑셀 내보내기·가져오기"""
 import io
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from conftest import NEXT, YM, add_nurses, err, fill_rotation, member, ward_head
 
@@ -89,3 +89,18 @@ def test_export_layout_is_a_printable_schedule():
     assert ws.freeze_panes == "C4"
     assert ws.page_setup.orientation == "landscape" and int(ws.page_setup.paperSize) == int(ws.PAPERSIZE_A4)
     assert ws.sheet_properties.pageSetUpPr.fitToPage and ws.page_setup.fitToHeight == 1
+
+
+def test_import_does_not_treat_a_number_in_title_as_the_date_header():
+    h = ward_head()
+    add_nurses(h, 1)
+    schedule = h.data("POST", "/wards/me/schedules", {"yearMonth": YM})
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["근무표 제목", 11])
+    sheet.append(["이름", 1, 2])
+    sheet.append(["간호사00", "D", "E"])
+    preview = h.data("POST", f"/wards/me/schedules/{schedule['id']}/import-previews",
+                     files={"file": ("schedule.xlsx", _xlsx(workbook))}, status=202)
+    assert [row["name"] for row in preview["rows"]] == ["간호사00"]
+    assert [(cell["date"][-2:], cell["raw"]) for cell in preview["cells"]] == [("01", "D"), ("02", "E")]

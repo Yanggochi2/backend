@@ -1,7 +1,7 @@
 """생성 후보와 저장된 근무표가 공유하는 배정 규칙."""
 from datetime import date, timedelta
 
-from app.domain.model import Duty, DutyRole, NurseInfo, NurseStatus, Roster, Violation
+from app.domain.model import Duty, DutyRole, NurseInfo, NurseStatus, Roster, StaffType, Violation
 
 
 REVERSE = {(Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E)}  # 역순환: 근무 사이 휴식이 11시간 미만
@@ -56,7 +56,8 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
     if n.duty_role == DutyRole.NIGHT_ONLY and x in (Duty.D, Duty.E):
         add("NIGHT_ONLY_SHIFT", "나이트 전담은 N만 배정 가능")
     if n.duty_role == DutyRole.NEW and x == Duty.N:
-        support = sum(other.duty_role != DutyRole.NEW and other.affiliated(d) and r.cell(other.id, d) == Duty.N
+        support = sum(other.staff_type == StaffType.NURSE and other.duty_role != DutyRole.NEW
+                      and other.affiliated(d) and r.cell(other.id, d) == Duty.N
                       for other in r.nurses)
         if support < rules.parameter("NEW_NIGHT_ALONE", "minExperienced"):
             add("NEW_NIGHT_ALONE", "신입 N 지원 인원 부족")

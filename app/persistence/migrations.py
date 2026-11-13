@@ -8,4 +8,6 @@ def upgrade(engine):
             columns = {c["name"] for c in inspect(connection).get_columns("nurses")}
             if "is_preceptor" not in columns:
                 connection.execute(text("ALTER TABLE nurses ADD COLUMN is_preceptor BOOLEAN NOT NULL DEFAULT FALSE"))
+            if "staff_type" not in columns:
+                connection.execute(text("ALTER TABLE nurses ADD COLUMN staff_type VARCHAR(20) NOT NULL DEFAULT 'NURSE'"))
             connection.execute(text("UPDATE nurses SET is_preceptor = TRUE, duty_role = 'GENERAL' WHERE duty_role = 'PRECEPTOR'"))

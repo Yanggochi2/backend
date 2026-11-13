@@ -8,10 +8,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Header, Query, Request, Response, UploadFile
 
-from app.business import (access, audit, auth, excel, generations, nurse_excel, nurses, rules, sharing,
+from app.business import (access, audit, auth, dashboard, excel, generations, nurse_excel, nurses, rules, sharing,
                           schedules, wards)
 from app.business.common import ApiException, parse_month
-from app.domain.model import DutyRole, NurseStatus, Role, Severity
+from app.domain.model import DutyRole, NurseStatus, Role, Severity, StaffType
 from app.presentation import schemas as s
 from app.presentation.deps import (ACCESS, REFRESH, AccountId, DB, PREFIX, Page, TxRoute, UserId,
                                    clear_auth_cookies, set_auth_cookies)
@@ -92,8 +92,9 @@ def create_nurse(body: s.NurseCreate, user_id: UserId, db: DB):
 @api.get("/wards/me/nurses")
 def list_nurses(user_id: UserId, db: DB, p: Page, q: str | None = None, role: Role | None = None,
                 dutyRole: DutyRole | None = None, status: NurseStatus | None = None,  # noqa: N803
+                staffType: StaffType | None = None,  # noqa: N803
                 includeRetired: bool = False, sort: str | None = None):  # noqa: N803
-    return nurses.list_(db, user_id, q, role, dutyRole, status, includeRetired, sort, p.page, p.size)
+    return nurses.list_(db, user_id, q, role, dutyRole, staffType, status, includeRetired, sort, p.page, p.size)
 
 
 @api.get("/wards/me/nurses/import-template.xlsx")
@@ -186,6 +187,13 @@ def get_schedule(schedule_id: uuid.UUID, user_id: UserId, db: DB, sort: str | No
 def edit_cells(schedule_id: uuid.UUID, body: s.CellBulkPatch, user_id: UserId, db: DB, lock: LockToken = None):
     changes = [(c.nurse_id, c.date, c.duty_code) for c in body.changes]
     return _d(schedules.edit_cells(db, user_id, schedule_id, body.base_version, changes, lock))
+
+
+@api.patch("/wards/me/schedules/{schedule_id}/forced-offs")
+def force_offs(schedule_id: uuid.UUID, body: s.ForceOffPatch, user_id: UserId, db: DB,
+               lock: LockToken = None):
+    cells = [(cell.nurse_id, cell.date) for cell in body.cells]
+    return _d(schedules.force_offs(db, user_id, schedule_id, body.base_version, cells, body.reason, lock))
 
 
 @api.get("/wards/me/schedules/{schedule_id}/coverage")
@@ -322,7 +330,13 @@ def revoke_share(schedule_id: uuid.UUID, user_id: UserId, db: DB):
 
 
 @api.get("/shared/schedules/{token}")
-def shared_schedule(token: str, db: DB, response: Response, sort: str | None = None):
+def shared_schedule(token: str, db: DB, response: Response, sort: str | None = None,
+                    q: str | None = Query(None, max_length=100)):
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
-    return _d(sharing.get(db, token, sort))
+    return _d(sharing.get(db, token, sort, q))
+
+
+@api.get("/wards/me/dashboard")
+def ward_dashboard(yearMonth: str, user_id: UserId, db: DB):  # noqa: N803
+    return _d(dashboard.get(db, user_id, yearMonth))

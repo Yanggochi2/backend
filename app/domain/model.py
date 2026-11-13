@@ -25,6 +25,12 @@ class Role(StrEnum):
     NURSE = "NURSE"
 
 
+class StaffType(StrEnum):
+    """직종. 권한(Role)·배정 역할(DutyRole)과 분리한다."""
+    NURSE = "NURSE"
+    NURSING_ASSISTANT = "NURSING_ASSISTANT"
+
+
 class DutyRole(StrEnum):
     """NUR-05 배정 규칙용 속성. 권한(Role)과 별개."""
     CHARGE = "CHARGE"
@@ -182,6 +188,7 @@ class NurseInfo:
     career_months: int = 0
     is_preceptor: bool = False
     skill_level: int = 3  # 숙련도 1~5 (SKILL_MIX)
+    staff_type: StaffType = StaffType.NURSE
 
     @property
     def weekday_only(self) -> bool:

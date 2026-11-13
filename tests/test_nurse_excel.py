@@ -1,8 +1,10 @@
 """간호사 엑셀 양식 다운로드·일괄 등록."""
 import io
+from pathlib import Path
 
 from openpyxl import load_workbook
 
+from app.business.common import today_kst
 from conftest import Api, err, ward_head
 
 
@@ -27,27 +29,32 @@ def _bytes(workbook) -> bytes:
 
 def test_download_template_and_import_nurses_atomically():
     h = ward_head()
+    year = today_kst().year
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
     assert [cell.value for cell in sheet[1]] == [
-        "이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일"]
-    _put(sheet, 2, ["김차지", "CHARGE", "ACTIVE", 2020, "N", 72, 5, "2025-01-01", None])
-    _put(sheet, 3, ["이프리", "GENERAL", "ACTIVE", 2021, "Y", 60, 4, "2025-01-01", None])
+        "이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일", "직종"]
+    _put(sheet, 2, ["김차지", "CHARGE", "ACTIVE", year - 6, "N", 72, 5, "2025-01-01", None, "NURSE"])
+    _put(sheet, 3, ["이프리", "GENERAL", "ACTIVE", year - 5, "Y", 60, 4, "2025-01-01", None, "NURSE"])
+    _put(sheet, 4, ["박조무", "GENERAL", "ACTIVE", year - 1, "N", 12, None, "2025-01-01", None,
+                    "NURSING_ASSISTANT"])
 
     result = h.data("POST", "/wards/me/nurses/import.xlsx",
                     files={"file": ("nurses.xlsx", _bytes(workbook))}, status=201)
-    assert result["createdCount"] == 2
+    assert result["createdCount"] == 3
     created = {n["name"]: n for n in result["nurses"]}
     assert created["김차지"]["dutyRole"] == "CHARGE"
     assert created["이프리"]["dutyRole"] == "GENERAL" and created["이프리"]["isPreceptor"]
+    assert created["박조무"]["staffType"] == "NURSING_ASSISTANT" and created["박조무"]["skillLevel"] == 3
 
 
 def test_invalid_import_rolls_back_all_rows():
     h = ward_head()
+    year = today_kst().year - 6
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
-    _put(sheet, 2, ["등록되면안됨", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
-    _put(sheet, 3, ["잘못된행", "GENERAL", "ACTIVE", 2020, "N", 12, 9, "2025-01-01", None])
+    _put(sheet, 2, ["등록되면안됨", "GENERAL", "ACTIVE", year, "N", 72, 3, "2025-01-01", None])
+    _put(sheet, 3, ["잘못된행", "GENERAL", "ACTIVE", year, "N", 72, 9, "2025-01-01", None])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
     assert details["errors"][0]["field"] == "숙련도"
@@ -72,10 +79,20 @@ def test_non_ascii_digit_text_is_row_error():
 
 def test_row_limit_counts_blank_rows():
     h = ward_head()
+    year = today_kst().year - 6
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
-    _put(sheet, 2, ["앞행", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
-    _put(sheet, 3 + 500, ["멀리", "GENERAL", "ACTIVE", 2020, "N", 12, 3, "2025-01-01", None])
+    _put(sheet, 2, ["앞행", "GENERAL", "ACTIVE", year, "N", 72, 3, "2025-01-01", None])
+    _put(sheet, 3 + 500, ["멀리", "GENERAL", "ACTIVE", year, "N", 72, 3, "2025-01-01", None])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     err(response, 422, "INVALID_NURSE_EXCEL")
     assert not h.data("GET", "/wards/me/nurses?q=앞행")
+
+
+def test_committed_sample_workbook_can_be_uploaded():
+    h = ward_head()
+    sample = Path(__file__).parents[1] / "docs" / "samples" / "nurse-import-test.xlsx"
+    result = h.data("POST", "/wards/me/nurses/import.xlsx",
+                    files={"file": (sample.name, sample.read_bytes())}, status=201)
+    assert result["createdCount"] == 4
+    assert {row["staffType"] for row in result["nurses"]} == {"NURSE", "NURSING_ASSISTANT"}

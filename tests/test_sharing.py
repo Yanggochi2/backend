@@ -23,7 +23,7 @@ def test_share_is_read_only_and_minimizes_personal_data():
     data = response.json()['data']
     assert data['defaultView'] == 'month' and data['defaultSort'] == 'proficiency'
     assert data['nurses'][0]['role'] == 'HEAD_NURSE'
-    assert set(data['nurses'][0]) == {'id', 'name', 'role', 'dutyRole'}
+    assert set(data['nurses'][0]) == {'id', 'name', 'role', 'dutyRole', 'staffType'}
     assert not any(c['editable'] for c in data['cells'])
     assert 'statistics' not in data and 'readiness' not in data and 'lock' not in data
     public.c.headers['Authorization'] = 'Bearer ' + link['shareToken']
@@ -32,6 +32,9 @@ def test_share_is_read_only_and_minimizes_personal_data():
     assert public('PATCH', f"/shared/schedules/{link['shareToken']}", {}).status_code == 405
     by_name = public.data('GET', f"/shared/schedules/{link['shareToken']}?sort=name")
     assert [n['name'] for n in by_name['nurses']] == sorted(n['name'] for n in by_name['nurses'])
+    mine = public.data('GET', f"/shared/schedules/{link['shareToken']}?q=간호사03")
+    assert [n['name'] for n in mine['nurses']] == ['간호사03']
+    assert {cell['nurseId'] for cell in mine['cells']} == {mine['nurses'][0]['id']}
     with SessionLocal() as db:
         share = db.scalar(select(ScheduleShare).where(ScheduleShare.schedule_id == uuid.UUID(s['id'])))
         assert len(share.token_hash) == 64

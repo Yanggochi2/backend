@@ -76,6 +76,21 @@ def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_ver
             "readiness": _readiness(db, s, vs)}
 
 
+def force_offs(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_version: int,
+               cells: list[tuple[uuid.UUID, date]], reason: str | None, lock_token: str | None) -> dict:
+    """수간호사가 인력 상황을 판단해 선택 셀을 O로 지정한다. 위반은 숨기지 않고 응답에 함께 돌려준다."""
+    m = members.require_head(db, user_id)
+    s = find(db, m, schedule_id)
+    editable(db, s, m, lock_token, base_version)
+    changed = apply_changes(db, s, [(nurse_id, day, Duty.O) for nurse_id, day in cells])
+    audit.log(db, m.ward_id, user_id, "FORCED_OFF_ASSIGNED", "SCHEDULE", s.id, None,
+              f"{changed} cells" + (f" reason={reason.strip()}" if reason and reason.strip() else ""))
+    r = roster(db, s)
+    vs = check(db, s, r)
+    return {"version": s.version, "changedCells": changed, "coverage": _coverage(r), "violations": vs,
+            "readiness": _readiness(db, s, vs)}
+
+
 def apply_changes(db: Session, s: Schedule, changes: list[tuple[uuid.UUID, date, Duty | None]]) -> int:
     """관리자가 연차·교육도 직접 입력한다. 소속 기간 밖 셀은 보호된다."""
     r = roster(db, s)
@@ -394,7 +409,8 @@ def view(db: Session, s: Schedule, m: Member, sort: str | None = None) -> dict:
                           "editable": can_edit and n.affiliated(d)})
     return {"id": s.id, "yearMonth": s.year_month, "status": s.status, "version": s.version,
             "defaultView": "month", "defaultSort": "proficiency", "sort": order,
-            "nurses": [{"id": n.id, "name": n.name, "dutyRole": "GENERAL" if n.duty_role.value == "PRECEPTOR" else n.duty_role,
+            "nurses": [{"id": n.id, "name": n.name, "staffType": n.staff_type,
+                        "dutyRole": "GENERAL" if n.duty_role.value == "PRECEPTOR" else n.duty_role,
                         "role": n.role, "careerMonths": n.career_months, "isPreceptor": n.is_preceptor,
                         "affiliationStart": iso(n.affiliation_start), "affiliationEnd": iso(n.affiliation_end),
                         "nightBlocked": status[n.id] == NurseStatus.PREGNANT if m.is_head else None}

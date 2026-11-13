@@ -6,7 +6,7 @@ from sqlalchemy import JSON, Enum, ForeignKey, Index, String, UniqueConstraint, 
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.domain.model import (AccountStatus, Duty, DutyRole, GenerationStatus, NotificationType, NurseInfo,
-                              NurseStatus, RequestStatus, RequestType, Role, ScheduleStatus, Severity)
+                              NurseStatus, RequestStatus, RequestType, Role, ScheduleStatus, Severity, StaffType)
 from app.persistence.db import Base, now
 
 # 모든 식별자는 UUID. 순번 id로 다른 병동 리소스를 추측하지 못하게 한다
@@ -105,6 +105,8 @@ class Nurse(Base):
     user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     role: Mapped[Role] = mapped_column(_enum(Role), default=Role.NURSE)
+    staff_type: Mapped[StaffType] = mapped_column(_enum(StaffType), default=StaffType.NURSE,
+                                                  server_default=StaffType.NURSE.value)
     duty_role: Mapped[DutyRole] = mapped_column(_enum(DutyRole), default=DutyRole.GENERAL)
     status: Mapped[NurseStatus] = mapped_column(_enum(NurseStatus), default=NurseStatus.ACTIVE)
     joined_at: Mapped[date]
@@ -124,7 +126,7 @@ class Nurse(Base):
         return NurseInfo(self.id, self.name, self.duty_role, self.status, self.affiliation_start,
                          self.affiliation_end, frozenset(uuid.UUID(x) for x in self.preceptor_of or []),
                          self.role, self.career_months, self.is_preceptor or self.duty_role == DutyRole.PRECEPTOR,
-                         self.skill_level)
+                         self.skill_level, self.staff_type)
 
 
 class Holiday(Base):

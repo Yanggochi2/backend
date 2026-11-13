@@ -55,7 +55,8 @@ def test_existing_database_upgrade_preserves_data_and_is_repeatable(tmp_path):
     upgrade(engine)
     upgrade(engine)
     with engine.connect() as db:
-        assert db.execute(text('SELECT joined_at, is_preceptor FROM nurses')).one() == ('2020-07-15', 1)
+        assert db.execute(text('SELECT joined_at, is_preceptor, staff_type FROM nurses')).one() == \
+            ('2020-07-15', 1, 'NURSE')
 
 
 def test_28_person_roster_matches_meeting_rules():
