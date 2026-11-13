@@ -70,7 +70,7 @@ def template(db: Session, user_id: uuid.UUID) -> bytes:
         ("상태", "ACTIVE/PREGNANT/ON_LEAVE", "ACTIVE"),
         ("입사연도", f"1900~{today_kst().year}", "2022"),
         ("프리셉터", "Y 또는 N", "N"),
-        ("경력개월", "0 이상의 정수", "36"),
+        ("경력개월", "필수, 0 이상의 정수", "36"),
         ("숙련도", "1~5 정수", "3"),
         ("소속시작일", "YYYY-MM-DD", "2026-01-01"),
         ("소속종료일", "선택, YYYY-MM-DD", ""),
@@ -172,7 +172,7 @@ def _parse(values: dict) -> dict:
     is_preceptor = _boolean(values["프리셉터"], "프리셉터")
     if role == DutyRole.PRECEPTOR:
         role, is_preceptor = DutyRole.GENERAL, True
-    career_months = _optional_integer(values["경력개월"], "경력개월")
+    career_months = _integer(values["경력개월"], "경력개월")
     skill_level = _optional_integer(values["숙련도"], "숙련도")
     if skill_level is not None and not 1 <= skill_level <= 5:
         raise RowError("숙련도", "1~5 범위여야 합니다")

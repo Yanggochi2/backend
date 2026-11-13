@@ -84,7 +84,7 @@ class NurseCreate(NurseFields):
     status: NurseStatus
     joined_year: StrictInt
     is_preceptor: StrictBool = False
-    career_months: int | None = Field(None, ge=0)
+    career_months: int = Field(ge=0)
     skill_level: int | None = Field(None, ge=1, le=5)
     affiliation_start: date
     affiliation_end: date | None = None

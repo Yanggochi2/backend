@@ -93,6 +93,11 @@ def test_experience_defaults_validation_and_nursing_assistant():
 
     h = ward_head()
     year = today_kst().year
+    without_career = {
+        "name": "경력누락", "dutyRole": "NEW", "status": "ACTIVE",
+        "joinedYear": year, "affiliationStart": f"{year}-01-01",
+    }
+    err(h("POST", "/wards/me/nurses", without_career), 400, "VALIDATION_ERROR")
     junior = h.data("POST", "/wards/me/nurses", {
         "name": "신규3개월", "staffType": "NURSE", "dutyRole": "NEW", "status": "ACTIVE",
         "joinedYear": year, "careerMonths": 3, "affiliationStart": f"{year}-01-01",

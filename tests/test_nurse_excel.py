@@ -77,6 +77,17 @@ def test_non_ascii_digit_text_is_row_error():
     assert details["errors"] == [{"row": 2, "field": "경력개월", "reason": "정수여야 합니다"}]
 
 
+def test_career_months_is_required_like_single_nurse_creation():
+    h = ward_head()
+    workbook = _template(h)
+    year = today_kst().year
+    _put(workbook["간호사 등록"], 2,
+         ["경력누락", "NEW", "ACTIVE", year, "N", None, None, f"{year}-01-01", None, "NURSE"])
+    response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
+    details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
+    assert details["errors"] == [{"row": 2, "field": "경력개월", "reason": "정수여야 합니다"}]
+
+
 def test_row_limit_counts_blank_rows():
     h = ward_head()
     year = today_kst().year - 6
@@ -96,3 +107,8 @@ def test_committed_sample_workbook_can_be_uploaded():
                     files={"file": (sample.name, sample.read_bytes())}, status=201)
     assert result["createdCount"] == 4
     assert {row["staffType"] for row in result["nurses"]} == {"NURSE", "NURSING_ASSISTANT"}
+    created = {row["name"]: row for row in result["nurses"]}
+    assert {name: row["careerMonths"] for name, row in created.items()} == {
+        "김차지": 72, "이프리": 60, "박신규": 3, "최조무": 12,
+    }
+    assert created["박신규"]["skillLevel"] == 1
