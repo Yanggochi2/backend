@@ -33,11 +33,11 @@ def test_download_template_and_import_nurses_atomically():
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
     assert [cell.value for cell in sheet[1]] == [
-        "이름", "직무역할", "상태", "입사연도", "프리셉터", "경력개월", "숙련도", "소속시작일", "소속종료일", "직종"]
-    _put(sheet, 2, ["김차지", "CHARGE", "ACTIVE", year - 6, "N", 72, 5, "2025-01-01", None, "NURSE"])
-    _put(sheet, 3, ["이프리", "GENERAL", "ACTIVE", year - 5, "Y", 60, 4, "2025-01-01", None, "NURSE"])
-    _put(sheet, 4, ["박조무", "GENERAL", "ACTIVE", year - 1, "N", 12, None, "2025-01-01", None,
-                    "NURSING_ASSISTANT"])
+        "이름", "입사연도", "직종", "직급", "프리셉터", "총 경력(년)", "총 경력(개월)", "숙련도", "상태", "소속 시작일"]
+    _put(sheet, 2, ["김차지", year - 6, "NURSE", "CHARGE", "N", 6, 0, 5, "ACTIVE", "2025-01-01"])
+    _put(sheet, 3, ["이프리", year - 5, "NURSE", "GENERAL", "Y", 5, 0, 4, "ACTIVE", "2025-01-01"])
+    _put(sheet, 4, ["박조무", year - 1, "NURSING_ASSISTANT", "GENERAL", "N", 1, 0, 3, "ACTIVE",
+                    "2025-01-01"])
 
     result = h.data("POST", "/wards/me/nurses/import.xlsx",
                     files={"file": ("nurses.xlsx", _bytes(workbook))}, status=201)
@@ -53,8 +53,8 @@ def test_invalid_import_rolls_back_all_rows():
     year = today_kst().year - 6
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
-    _put(sheet, 2, ["등록되면안됨", "GENERAL", "ACTIVE", year, "N", 72, 3, "2025-01-01", None])
-    _put(sheet, 3, ["잘못된행", "GENERAL", "ACTIVE", year, "N", 72, 9, "2025-01-01", None])
+    _put(sheet, 2, ["등록되면안됨", year, "NURSE", "GENERAL", "N", 6, 0, 3, "ACTIVE", "2025-01-01"])
+    _put(sheet, 3, ["잘못된행", year, "NURSE", "GENERAL", "N", 6, 0, 9, "ACTIVE", "2025-01-01"])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
     assert details["errors"][0]["field"] == "숙련도"
@@ -71,10 +71,11 @@ def test_nurse_excel_is_head_only_and_rejects_invalid_file():
 def test_non_ascii_digit_text_is_row_error():
     h = ward_head()
     workbook = _template(h)
-    _put(workbook["간호사 등록"], 2, ["윗첨자", "GENERAL", "ACTIVE", 2020, "N", "²", 3, "2025-01-01", None])
+    _put(workbook["간호사 등록"], 2,
+         ["윗첨자", 2020, "NURSE", "GENERAL", "N", "²", 0, 3, "ACTIVE", "2025-01-01"])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
-    assert details["errors"] == [{"row": 2, "field": "경력개월", "reason": "정수여야 합니다"}]
+    assert details["errors"] == [{"row": 2, "field": "총 경력(년)", "reason": "정수여야 합니다"}]
 
 
 def test_career_months_is_required_like_single_nurse_creation():
@@ -82,10 +83,10 @@ def test_career_months_is_required_like_single_nurse_creation():
     workbook = _template(h)
     year = today_kst().year
     _put(workbook["간호사 등록"], 2,
-         ["경력누락", "NEW", "ACTIVE", year, "N", None, None, f"{year}-01-01", None, "NURSE"])
+         ["경력누락", year, "NURSE", "NEW", "N", None, 3, 1, "ACTIVE", f"{year}-01-01"])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     details = err(response, 422, "INVALID_NURSE_EXCEL")["details"]
-    assert details["errors"] == [{"row": 2, "field": "경력개월", "reason": "정수여야 합니다"}]
+    assert details["errors"] == [{"row": 2, "field": "총 경력(년)", "reason": "정수여야 합니다"}]
 
 
 def test_row_limit_counts_blank_rows():
@@ -93,8 +94,8 @@ def test_row_limit_counts_blank_rows():
     year = today_kst().year - 6
     workbook = _template(h)
     sheet = workbook["간호사 등록"]
-    _put(sheet, 2, ["앞행", "GENERAL", "ACTIVE", year, "N", 72, 3, "2025-01-01", None])
-    _put(sheet, 3 + 500, ["멀리", "GENERAL", "ACTIVE", year, "N", 72, 3, "2025-01-01", None])
+    _put(sheet, 2, ["앞행", year, "NURSE", "GENERAL", "N", 6, 0, 3, "ACTIVE", "2025-01-01"])
+    _put(sheet, 3 + 500, ["멀리", year, "NURSE", "GENERAL", "N", 6, 0, 3, "ACTIVE", "2025-01-01"])
     response = h("POST", "/wards/me/nurses/import.xlsx", files={"file": ("nurses.xlsx", _bytes(workbook))})
     err(response, 422, "INVALID_NURSE_EXCEL")
     assert not h.data("GET", "/wards/me/nurses?q=앞행")

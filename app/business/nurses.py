@@ -176,40 +176,34 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
     n.preceptor_of = sorted({str(p) for p in f["preceptor_of"] or []})
 
 
-def experience_values(joined_year: int, career_months: int | None, skill_level: int | None) -> tuple[int, int]:
-    """입사 월을 받지 않으므로 해당 입사연도에서 가능한 경력 범위를 검증하고 빈 값은 자동 계산한다."""
+def experience_values(joined_year: int, career_months: int, skill_level: int) -> tuple[int, int]:
+    """프론트에서 입력한 총 경력과 숙련도를 입사연도의 가능한 범위와 함께 검증한다."""
     today = today_kst()
     maximum = (today.year - joined_year) * 12 + today.month - 1
     minimum = 0 if joined_year == today.year else max(0, (today.year - joined_year - 1) * 12 + today.month)
-    career = maximum if career_months is None else career_months
-    if not minimum <= career <= maximum:
+    if not minimum <= career_months <= maximum:
         raise bad_request("VALIDATION_ERROR",
                           f"입사연도 {joined_year}년의 가능한 경력은 {minimum}~{maximum}개월입니다",
                           "careerMonths")
-    skill = (1 if career <= 3 else 2 if career <= 6 else 3) if skill_level is None else skill_level
-    if career <= 3 and skill not in (1, 2):
+    if career_months <= 3 and skill_level not in (1, 2):
         raise bad_request("VALIDATION_ERROR", "경력 3개월 이하는 숙련도 1~2만 선택할 수 있습니다", "skillLevel")
-    return career, skill
+    return career_months, skill_level
 
 
 def _experience(changes: dict, joined_year: int | None = None, current_career: int | None = None,
                 current_skill: int | None = None, creating: bool = False) -> dict:
-    """등록·수정에서 입사연도 변경 시 경력과 초기 숙련도를 함께 맞춘다."""
+    """등록·수정에서 사용자가 입력한 입사연도·경력·숙련도의 조합을 검증한다."""
     year = changes.get("joined_year", joined_year)
     if year is None:
         return changes
     touches_experience = any(field in changes for field in ("joined_year", "career_months", "skill_level"))
     if not creating and not touches_experience:
         return changes
-    career_given = changes.get("career_months")
-    if not creating and "joined_year" not in changes and "career_months" not in changes:
-        career_given = current_career
-    skill_given = changes.get("skill_level") if "skill_level" in changes else None
-    career, skill = experience_values(year, career_given, skill_given)
-    if creating or "joined_year" in changes or "career_months" in changes:
-        changes["career_months"] = career
-    if "skill_level" in changes or creating or career <= 6:
-        changes["skill_level"] = skill if skill_given is not None or career <= 6 or creating else current_skill
+    career = changes.get("career_months", current_career)
+    skill = changes.get("skill_level", current_skill)
+    if career is None or skill is None:
+        return changes  # 생성 요청의 필수값 누락은 요청 스키마가 400으로 처리한다.
+    experience_values(year, career, skill)
     return changes
 
 

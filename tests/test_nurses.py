@@ -84,23 +84,29 @@ def test_year_only_and_preceptor_is_not_rank():
     assert [n["id"] for n in h.data("GET", "/wards/me/nurses")] == [h.workspace["headNurseId"], charge["id"], ordinary["id"], preceptor["id"]]
     assert h.data("GET", "/wards/me/nurses?sort=name")[0]["id"] == ordinary["id"]
     err(h("GET", "/wards/me/nurses?sort=careerMonths,desc"), 400, "INVALID_SORT")
-    result = h.data("PATCH", f"/wards/me/nurses/{ordinary['id']}", {"joinedYear": current_year - 24})["nurse"]
+    result = h.data("PATCH", f"/wards/me/nurses/{ordinary['id']}", {
+        "joinedYear": current_year - 24, "careerMonths": 288,
+    })["nurse"]
     assert result["joinedYear"] == current_year - 24 and "joinedAt" not in result and result["affiliationStart"] == "2025-01-01"
 
 
-def test_experience_defaults_validation_and_nursing_assistant():
+def test_experience_validation_and_nursing_assistant():
     from app.business.common import today_kst
 
     h = ward_head()
     year = today_kst().year
     without_career = {
         "name": "경력누락", "dutyRole": "NEW", "status": "ACTIVE",
-        "joinedYear": year, "affiliationStart": f"{year}-01-01",
+        "joinedYear": year, "skillLevel": 1, "affiliationStart": f"{year}-01-01",
     }
     err(h("POST", "/wards/me/nurses", without_career), 400, "VALIDATION_ERROR")
+    err(h("POST", "/wards/me/nurses", {
+        "name": "숙련도누락", "dutyRole": "NEW", "status": "ACTIVE",
+        "joinedYear": year, "careerMonths": 3, "affiliationStart": f"{year}-01-01",
+    }), 400, "VALIDATION_ERROR")
     junior = h.data("POST", "/wards/me/nurses", {
         "name": "신규3개월", "staffType": "NURSE", "dutyRole": "NEW", "status": "ACTIVE",
-        "joinedYear": year, "careerMonths": 3, "affiliationStart": f"{year}-01-01",
+        "joinedYear": year, "careerMonths": 3, "skillLevel": 1, "affiliationStart": f"{year}-01-01",
     })
     assert junior["careerMonths"] == 3 and junior["skillLevel"] == 1
     err(h("PATCH", f"/wards/me/nurses/{junior['id']}", {"skillLevel": 4}), 400, "VALIDATION_ERROR")
