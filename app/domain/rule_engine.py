@@ -53,6 +53,14 @@ def assignment_violations(r: Roster, n: NurseInfo, d: date) -> list[Violation]:
             add("PING_PONG", f"매일 다른 근무 {p2}→{p1}→{x}")
         if p3 is not None and p3.is_work != p2.is_work != p1.is_work != x.is_work:
             add("PING_PONG", f"근무·휴무 교대 {p3} {p2} {p1} {x}")
+    if x == Duty.N:
+        # 한 번의 연속 근무 안에 D와 N이 함께 있으면 위반 (DDEEN, DDNN 등)
+        run, previous = [], d - one
+        while len(run) < 31 and (v := r.cell(n.id, previous)) is not None and v.is_work:
+            run.append(v)
+            previous -= one
+        if Duty.D in run:
+            add("PING_PONG", f"연속 근무 안에 D와 N이 섞임 ({''.join(reversed(run))}{x})")
     if n.duty_role == DutyRole.NIGHT_ONLY and x in (Duty.D, Duty.E):
         add("NIGHT_ONLY_SHIFT", "나이트 전담은 N만 배정 가능")
     if n.duty_role == DutyRole.NEW and x == Duty.N:

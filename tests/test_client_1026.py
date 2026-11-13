@@ -81,8 +81,11 @@ def test_28_person_roster_matches_meeting_rules():
     for duty in (Duty.E, Duty.N):
         values = [counts[n.id][duty] for n in ns[3:]]
         assert max(values) - min(values) <= 2, (duty, values)
+    # 남는 인력은 듀티별 하루 인원을 고르게 올려 흡수한다: 필요 인원 이상, 날짜 간 차이 1명 이내
+    for duty, need in ((Duty.D, 7), (Duty.E, 5), (Duty.N, 4)):
+        daily = [sum(result.cell(n.id, d) == duty for n in ns) for d in r.days()]
+        assert min(daily) >= need and max(daily) - min(daily) <= 1, (duty, daily)
     assert sum(c[Duty.N] for c in counts.values()) == 4 * 30
-    assert sum(c[Duty.E] for c in counts.values()) == 5 * 30
 
 
 def test_fixed_conflicting_charge_and_unachievable_target_are_reported():
