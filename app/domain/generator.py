@@ -19,7 +19,8 @@ from app.domain.validator import SKILL_TOLERANCE, has_role, off_target
 
 SHIFTS = (Duty.D, Duty.E, Duty.N, Duty.O)
 COVERAGE_WEIGHT = 10_000
-NEW_ALONE_WEIGHT = 20_000  # 신입 혼자 야간보다 인원 부족으로 남기는 편이 낫다
+SHORT_PRIORITY = {Duty.D: 1, Duty.E: 2, Duty.N: 3}  # 인원 부족 감점 배수. 모자라면 D부터 비운다
+NEW_ALONE_WEIGHT = 40_000  # 신입 혼자 야간보다 인원 부족(최대 COVERAGE_WEIGHT×3)으로 남기는 편이 낫다
 SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
 # OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
 WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
@@ -334,10 +335,10 @@ class _Model:
         needs = {"CHARGE_EVERY_SHIFT": has_role(r, {DutyRole.CHARGE}), "SENIOR_EVERY_SHIFT": has_role(r, SENIOR_ROLES)}
         w_skill = self.weight("SKILL_MIX")
         # 적정 인원: 필요 인원보다 인력이 남으면 남는 만큼 듀티별 하루 인원을 올리되, 모든 날을 같은 수(최대 1 차이)로 맞춘다.
-        # 특정 날짜에 몰리지 않게 듀티마다 일자별 최대-최소 차이를 감점한다
+        # 특정 날짜에 몰리지 않게 듀티마다 일자별 최대-최소 차이를 감점한다. N은 남아도 늘리지 않는다
         level = {}
         if w is not SKIP:
-            for x in (Duty.D, Duty.E, Duty.N):
+            for x in (Duty.D, Duty.E):
                 if r.rules.required(x) > 0:
                     lo, hi = self.m.NewIntVar(0, len(r.nurses), ""), self.m.NewIntVar(0, len(r.nurses), "")
                     level[x] = (lo, hi)
@@ -348,7 +349,8 @@ class _Model:
                 # 최소 인원 부족은 큰 감점으로 찾아낸 뒤 검증기에서 HARD로 보고한다. 초과 E/N은 억제한다.
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)
                 need = r.rules.required(x)
-                self.at_least(assigned, need, w)
+                # 인력이 모자라면 D부터 비우고 E, N 순서로 지킨다
+                self.at_least(assigned, need, w if w is SKIP else w * SHORT_PRIORITY[x])
                 if w is not SKIP:
                     self.at_most(assigned, need, 100 if x in (Duty.E, Duty.N) else 1, len(on))
                 if x in level:
