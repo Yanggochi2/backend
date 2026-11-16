@@ -12,6 +12,7 @@ HARD, SOFT = Severity.HARD, Severity.SOFT
 
 def validate(r: Roster) -> list[Violation]:
     out: list[Violation] = []
+    carried: list[Violation] = []  # 다음 달로 이월되는 OFF 부족
     days = r.days()
     rules = r.rules
 
@@ -38,11 +39,10 @@ def validate(r: Roster) -> list[Violation]:
         tolerance = rules.parameter("OFF_TARGET", "maxDeviation")
         target = off_target(r, n)
         if not n.weekday_only and n.status != NurseStatus.ON_LEAVE and abs(offs - target) > tolerance:
-            direction = "과다" if offs > target else "부족"
-            out.append(Violation(
-                SOFT, "OFF_TARGET", n.id, None, None,
-                f"OFF {direction}: {offs}일 / 목표 {target}일 (허용 편차 ±{tolerance}일)",
-            ))
+            v = Violation(SOFT, "OFF_TARGET", n.id, None, None,
+                          f"OFF {'과다' if offs > target else '부족'}: {offs}일 / 목표 {target}일 (허용 편차 ±{tolerance}일)")
+            # 못 쓴 O는 확정 후 다음 달로 이월되므로 확정을 막지 않는다(항상 SOFT). 과다만 규칙 강도를 따른다
+            (out if offs > target else carried).append(v)
         nights = sum(1 for d in days if r.cell(n.id, d) == Duty.N)
         limit = NIGHT_ONLY_MAX_NIGHTS if n.duty_role == DutyRole.NIGHT_ONLY else rules.parameter("MAX_MONTHLY_NIGHTS", "max")
         if nights > limit:
@@ -72,7 +72,8 @@ def validate(r: Roster) -> list[Violation]:
                         n.staff_type == StaffType.NURSE and n.duty_role in roles and n.affiliated(d)
                         and r.cell(n.id, d) == duty for n in r.nurses):
                     out.append(Violation(HARD, code, None, d, duty, f"{duty} 근무에 {label} 없음"))
-    return [replace(v, severity=rules.severity_for(v.rule_id)) for v in out if rules.enabled(v.rule_id)]
+    return ([replace(v, severity=rules.severity_for(v.rule_id)) for v in out if rules.enabled(v.rule_id)]
+            + [v for v in carried if rules.enabled(v.rule_id)])
 
 
 OFFISH = (Duty.O, Duty.AL)
