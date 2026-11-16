@@ -180,13 +180,16 @@ def _apply(db: Session, m: Member, n: Nurse, f: dict) -> None:
 
 
 def experience_values(joined_year: int, career_months: int, skill_level: int) -> tuple[int, int]:
-    """프론트에서 입력한 총 경력과 숙련도를 입사연도의 가능한 범위와 함께 검증한다."""
+    """프론트에서 입력한 총 경력과 숙련도를 검증한다.
+
+    총 경력은 이 병원 근무 기간보다 짧을 수 없다(입사 연도 12월 입사로 본 최소값).
+    다른 병원 경력이 더해질 수 있으므로 길게 넣는 것은 막지 않는다 (11/16 클라이언트 미팅).
+    """
     today = today_kst()
-    maximum = (today.year - joined_year) * 12 + today.month - 1
     minimum = 0 if joined_year == today.year else max(0, (today.year - joined_year - 1) * 12 + today.month)
-    if not minimum <= career_months <= maximum:
+    if career_months < minimum:
         raise bad_request("VALIDATION_ERROR",
-                          f"입사연도 {joined_year}년의 가능한 경력은 {minimum}~{maximum}개월입니다",
+                          f"입사연도 {joined_year}년이면 총 경력은 {minimum}개월 이상이어야 합니다",
                           "careerMonths")
     if career_months <= 3 and skill_level not in (1, 2):
         raise bad_request("VALIDATION_ERROR", "경력 3개월 이하는 숙련도 1~2만 선택할 수 있습니다", "skillLevel")
