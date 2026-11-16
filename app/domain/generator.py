@@ -29,6 +29,8 @@ WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTE
 SKILL_OUT_WEIGHT = 100  # 근무 평균 숙련도가 허용 범위를 벗어난 정도
 FAIRNESS_WEIGHT = 10
 LEVEL_WEIGHT = 1_000  # 듀티별 하루 인원의 일자 간 차이(최대-최소) 1명당
+# N 초과는 1단계(SOFTENED_WEIGHT 이상, 수 초 안에 최적해)에서 막는다. 2단계에 두면 CPU 부하에 따라 N이 0~19칸 넘쳤다
+OVER_NIGHT_WEIGHT = 600
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
@@ -55,6 +57,7 @@ def generate(r: Roster, max_seconds: float | None = None) -> Cells:
     model.hint(_rotation_hint(r))
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 8
+    solver.parameters.random_seed = 0
     deadline = time.monotonic() + total
     for minimum, limit in ((SOFTENED_WEIGHT, total * 0.3), (0, None)):
         objective = sum(w * e for w, e in model.cost if w >= minimum)
@@ -352,7 +355,7 @@ class _Model:
                 # 인력이 모자라면 D부터 비우고 E, N 순서로 지킨다
                 self.at_least(assigned, need, w if w is SKIP else w * SHORT_PRIORITY[x])
                 if w is not SKIP:
-                    self.at_most(assigned, need, 100 if x in (Duty.E, Duty.N) else 1, len(on))
+                    self.at_most(assigned, need, {Duty.D: 1, Duty.E: 100, Duty.N: OVER_NIGHT_WEIGHT}[x], len(on))
                 if x in level:
                     self.m.Add(assigned >= level[x][0])
                     self.m.Add(assigned <= level[x][1])
