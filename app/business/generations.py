@@ -51,6 +51,19 @@ def start(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, fixed: list[t
     after = r.with_cells(cells)
     vs = validator.validate(after)
     hard = [v for v in vs if v.severity == Severity.HARD]
+    # 그대로 두라고 한 칸이 필수 규칙과 부딪치면(손으로 고친 칸, 새로 온 간호사 등) 해가 나오지 않는다.
+    # 그때는 그 칸들을 못 박지 않고 "되도록 그대로"로 바꿔 한 번 더 짠다. 꼭 바꿔야 하는 칸만 바뀐다 (#99)
+    changed = 0
+    prefer = {n: {d: x for d, x in row.items() if x not in (Duty.AL, Duty.ED)} for n, row in kept.items()}
+    if hard and any(prefer.values()):
+        loose = {n: {d: x for d, x in row.items() if x in (Duty.AL, Duty.ED)} for n, row in kept.items()}
+        retry = generator.generate(r.with_cells(loose), max_seconds, prefer=prefer)
+        retry_vs = validator.validate(r.with_cells(retry))
+        retry_hard = [v for v in retry_vs if v.severity == Severity.HARD]
+        if len(retry_hard) < len(hard):
+            cells, vs, hard = retry, retry_vs, retry_hard
+            after = r.with_cells(cells)
+            changed = sum(1 for n, row in prefer.items() for d, x in row.items() if cells.get(n, {}).get(d) != x)
     wishes = [(nurse_id, d) for nurse_id, ds in r.wish_offs.items() for d in ds]
     granted = sum(1 for nurse_id, d in wishes if after.cell(nurse_id, d) in (Duty.O, Duty.AL))
 
@@ -58,7 +71,9 @@ def start(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, fixed: list[t
                         max_seconds=max_seconds or MAX_SECONDS, fixed_cells=[[str(n), d.isoformat()] for n, d in fixed],
                         hard_violation_count=len(hard),
                         metrics={"wishOffRate": granted / len(wishes) if wishes else 1.0,
-                                 "softViolationCount": len(vs) - len(hard)})
+                                 "softViolationCount": len(vs) - len(hard),
+                                 # 그대로 두라고 했지만 필수 규칙에 맞추려고 바꾼 칸 수 (화면에 알려 준다)
+                                 "changedKeptCells": changed})
     if hard:
         # GEN-04: 해 없음. 충돌 원인(남은 하드 위반)·완화안·부분 해를 남기고 근무표는 바꾸지 않는다
         ids = {code: x.id for code, x in rules.rows(db, m.ward_id).items()}
