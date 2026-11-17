@@ -299,12 +299,11 @@ class _Model:
                     self.forbid(alone + [self.lit(n, d - one, WORK)], w_blk)
                     self.forbid(alone + [self.lit(n, d + one, WORK)], w_blk)
         self._weekly_rest(n)
-        # 인간미: 하드 상한(5일)까지 꽉 채우지 말고 4일 근무 후 쉬게, E 다음 바로 N(EENNN처럼 긴 묶음)은 피한다
+        # 인간미: 하드 상한(5일)까지 꽉 채우지 말고 4일 근무 후 쉬게 한다.
+        # E→N 감점은 E 횟수 공정성(28인 테스트)을 흔들어 뺐다. N을 줄이는 건 인원 추천(staffing)에서 한다
         t = self.timeline
         for i in range(len(t) - COMFORT_RUN):
             self.forbid([self.lit(n, d, WORK) for d in t[i:i + COMFORT_RUN + 1]], COMFORT_WEIGHT)
-        for a, b in zip(t, t[1:]):
-            self.forbid([self.lit(n, a, Duty.E), self.lit(n, b, Duty.N)], COMFORT_WEIGHT)
         w = self.weight("PRECEPTOR_MISMATCH")
         for c in n.preceptees:
             child = next((o for o in r.nurses if o.id == c), None)
