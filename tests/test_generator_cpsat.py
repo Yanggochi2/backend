@@ -71,3 +71,12 @@ def test_on_leave_nurse_is_off_and_shortage_still_returns_cells():
     assert set(seq(out, 2)) == {Duty.O}
     assert "COVERAGE" in {v.rule_id for v in hard(vs)}, "인원 부족은 하드 위반으로 남는다"
     assert all(x is not None for x in seq(out, 1))
+
+
+def test_shortage_empties_day_shift_first():
+    # 12명 × 20일 = 240칸 < 필요 (4+3+3)×30 = 300칸. 모자라는 60칸은 D에서 비우고 E·N은 채운다
+    ns = [nurse(i) for i in range(1, 13)]
+    out, vs = run(Roster(NOV, ns, {}, rules(4, 3, 3, COVERAGE={"severity": Severity.SOFT}), 10), seconds=10)
+    count = {x: [sum(out.cell(n.id, d) == x for n in ns) for d in DAYS] for x in (Duty.D, Duty.E, Duty.N)}
+    assert min(count[Duty.E]) == 3 and min(count[Duty.N]) == 3, count
+    assert sum(count[Duty.D]) == 240 - 180 and max(count[Duty.N]) == 3

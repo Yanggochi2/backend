@@ -12,7 +12,7 @@ from app.persistence.db import SessionLocal
 from app.persistence.migrations import upgrade
 from app.persistence.models import Nurse, Ward
 from app.seed import GENERAL, seed
-from conftest import YM, add_nurses, err, ward_head
+from conftest import YM, add_nurses, confirm_schedule, err, ward_head
 
 
 def test_off_formula_never_expands_to_fill_staffing_and_holidays_deduplicate():
@@ -81,8 +81,11 @@ def test_28_person_roster_matches_meeting_rules():
     for duty in (Duty.E, Duty.N):
         values = [counts[n.id][duty] for n in ns[3:]]
         assert max(values) - min(values) <= 2, (duty, values)
+    # 남는 인력은 듀티별 하루 인원을 고르게 올려 흡수한다: 필요 인원 이상, 날짜 간 차이 1명 이내
+    for duty, need in ((Duty.D, 7), (Duty.E, 5), (Duty.N, 4)):
+        daily = [sum(result.cell(n.id, d) == duty for n in ns) for d in r.days()]
+        assert min(daily) >= need and max(daily) - min(daily) <= 1, (duty, daily)
     assert sum(c[Duty.N] for c in counts.values()) == 4 * 30
-    assert sum(c[Duty.E] for c in counts.values()) == 5 * 30
 
 
 def test_fixed_conflicting_charge_and_unachievable_target_are_reported():
@@ -125,3 +128,26 @@ def test_seed_generation_confirmation_and_public_view():
     shared = Api().data('GET', f'/shared/schedules/{token}')
     assert shared['status'] == 'CONFIRMED' and len(shared['nurses']) == 28
     assert all(c['editable'] is False for c in shared['cells'])
+
+
+def test_unused_offs_allow_confirmation_and_carry_into_february():
+    """1월에 O 2칸을 연차로 바꿔 O를 다 못 써도 확정할 수 있어야 하고, 남은 O는 2월 목표에 더해져 2월 생성에 반영된다"""
+    h = ward_head(1, 1, 1)
+    add_nurses(h, 6)
+    jan = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-01'}, status=201)
+    assert h.data('POST', f"/wards/me/schedules/{jan['id']}/generations", {'maxSeconds': 5})['status'] == 'SUCCEEDED'
+    jan = h.data('GET', f"/wards/me/schedules/{jan['id']}")
+    nurse = next(n for n in jan['nurses'] if n['role'] != 'HEAD_NURSE')
+    offs = [c['date'] for c in jan['cells'] if c['nurseId'] == nurse['id'] and c['dutyCode'] == 'O'][:2]
+    h.data('PATCH', f"/wards/me/schedules/{jan['id']}/cells", {'baseVersion': jan['version'], 'changes': [
+        {'nurseId': nurse['id'], 'date': d, 'dutyCode': 'AL'} for d in offs]})
+    jan = h.data('GET', f"/wards/me/schedules/{jan['id']}")
+    assert next(s for s in jan['statistics'] if s['nurseId'] == nurse['id'])['remainingOff'] == 2
+    confirm_schedule(h, jan)
+
+    feb = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-02'}, status=201)
+    stat = next(s for s in feb['statistics'] if s['nurseId'] == nurse['id'])
+    assert stat['offCarry'] == 2 and stat['offTarget'] == feb['offTarget'] + 2
+    assert h.data('POST', f"/wards/me/schedules/{feb['id']}/generations", {'maxSeconds': 5})['status'] == 'SUCCEEDED'
+    feb = h.data('GET', f"/wards/me/schedules/{feb['id']}")
+    assert sum(c['dutyCode'] == 'O' for c in feb['cells'] if c['nurseId'] == nurse['id']) == feb['offTarget'] + 2

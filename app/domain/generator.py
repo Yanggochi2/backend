@@ -19,7 +19,8 @@ from app.domain.validator import SKILL_TOLERANCE, has_role, off_target
 
 SHIFTS = (Duty.D, Duty.E, Duty.N, Duty.O)
 COVERAGE_WEIGHT = 10_000
-NEW_ALONE_WEIGHT = 20_000  # 신입 혼자 야간보다 인원 부족으로 남기는 편이 낫다
+SHORT_PRIORITY = {Duty.D: 1, Duty.E: 2, Duty.N: 3}  # 인원 부족 감점 배수. 모자라면 D부터 비운다
+NEW_ALONE_WEIGHT = 40_000  # 신입 혼자 야간보다 인원 부족(최대 COVERAGE_WEIGHT×3)으로 남기는 편이 낫다
 SOFTENED_WEIGHT = 500      # SOFT로 낮춘 하드 규칙
 # OFF 개수는 간호사 사이 가장 중요한 공정성 기준이라 하드 규칙 수준(1단계)으로 맞춘다
 WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTENED_WEIGHT, "NIGHT_OFF_DAY": 20,
@@ -27,6 +28,9 @@ WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTE
            "PRECEPTOR_MISMATCH": 5, "SKILL_MIX": 5}
 SKILL_OUT_WEIGHT = 100  # 근무 평균 숙련도가 허용 범위를 벗어난 정도
 FAIRNESS_WEIGHT = 10
+LEVEL_WEIGHT = 1_000  # 듀티별 하루 인원의 일자 간 차이(최대-최소) 1명당
+# N 초과는 1단계(SOFTENED_WEIGHT 이상, 수 초 안에 최적해)에서 막는다. 2단계에 두면 CPU 부하에 따라 N이 0~19칸 넘쳤다
+OVER_NIGHT_WEIGHT = 600
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
@@ -53,9 +57,11 @@ def generate(r: Roster, max_seconds: float | None = None) -> Cells:
     model.hint(_rotation_hint(r))
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 8
+    solver.parameters.random_seed = 0
     deadline = time.monotonic() + total
     for minimum, limit in ((SOFTENED_WEIGHT, total * 0.3), (0, None)):
-        model.m.Minimize(sum(w * e for w, e in model.cost if w >= minimum))
+        objective = sum(w * e for w, e in model.cost if w >= minimum)
+        model.m.Minimize(objective)
         # 1단계가 일찍 끝나면 남은 시간을 모두 2단계에 쓴다
         remaining = deadline - time.monotonic()
         if remaining <= 0:
@@ -64,6 +70,9 @@ def generate(r: Roster, max_seconds: float | None = None) -> Cells:
         if solver.Solve(model.m) in FOUND:
             best = model.cells(solver)
             model.hint(best)
+            if minimum:
+                # 2단계가 1단계 결과(하드·적정 인원)를 되돌리지 않게 묶는다
+                model.m.Add(objective <= round(solver.ObjectiveValue()))
     return best
 
 
@@ -214,13 +223,19 @@ class _Model:
                 self.forbid(nn + [_neg(self.lit(n, t[i + 1], Duty.N)), self.lit(n, t[i + 2], WORK)], w)
         w = self.weight("PING_PONG")
         if w is not SKIP:
+            # 한 번의 연속 근무 안에 D와 N이 함께 있으면 안 된다 (DDEEN, DDNN 등). 휴무 없이 D 다음 N까지의 구간을 막는다
+            for i, a in enumerate(t):
+                for j in range(i + 1, min(i + LOOKBACK_DAYS, len(t))):
+                    self.forbid([self.lit(n, a, Duty.D)] + [self.lit(n, d, WORK) for d in t[i + 1:j]]
+                                + [self.lit(n, t[j], Duty.N)], w)
             for i in range(2, len(t)):
                 if not all(self.known(n, d) for d in t[i - 2:i + 1]):
                     continue
                 # 매일 다른 근무 (D E N 등)
-                for a in (Duty.D, Duty.E, Duty.N):
-                    for b in (Duty.D, Duty.E, Duty.N):
-                        for c in (Duty.D, Duty.E, Duty.N):
+                work = (Duty.D, Duty.E, Duty.N, Duty.ED)  # 검증기와 같이 ED도 근무로 본다
+                for a in work:
+                    for b in work:
+                        for c in work:
                             if a != b != c:
                                 self.forbid([self.lit(n, t[i - 2], a), self.lit(n, t[i - 1], b),
                                              self.lit(n, t[i], c)], w)
@@ -322,15 +337,28 @@ class _Model:
         w_new = self.weight("NEW_NIGHT_ALONE", NEW_ALONE_WEIGHT)
         needs = {"CHARGE_EVERY_SHIFT": has_role(r, {DutyRole.CHARGE}), "SENIOR_EVERY_SHIFT": has_role(r, SENIOR_ROLES)}
         w_skill = self.weight("SKILL_MIX")
+        # 적정 인원: 필요 인원보다 인력이 남으면 남는 만큼 듀티별 하루 인원을 올리되, 모든 날을 같은 수(최대 1 차이)로 맞춘다.
+        # 특정 날짜에 몰리지 않게 듀티마다 일자별 최대-최소 차이를 감점한다. N은 남아도 늘리지 않는다
+        level = {}
+        if w is not SKIP:
+            for x in (Duty.D, Duty.E):
+                if r.rules.required(x) > 0:
+                    lo, hi = self.m.NewIntVar(0, len(r.nurses), ""), self.m.NewIntVar(0, len(r.nurses), "")
+                    level[x] = (lo, hi)
+                    self.at_most(hi - lo, 1, LEVEL_WEIGHT, len(r.nurses))
         for d in self.days:
             on = [n for n in r.nurses if n.affiliated(d) and n.staff_type == StaffType.NURSE]
             for x in (Duty.D, Duty.E, Duty.N):
                 # 최소 인원 부족은 큰 감점으로 찾아낸 뒤 검증기에서 HARD로 보고한다. 초과 E/N은 억제한다.
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)
                 need = r.rules.required(x)
-                self.at_least(assigned, need, w)
+                # 인력이 모자라면 D부터 비우고 E, N 순서로 지킨다
+                self.at_least(assigned, need, w if w is SKIP else w * SHORT_PRIORITY[x])
                 if w is not SKIP:
-                    self.at_most(assigned, need, 100 if x in (Duty.E, Duty.N) else 1, len(on))
+                    self.at_most(assigned, need, {Duty.D: 1, Duty.E: 100, Duty.N: OVER_NIGHT_WEIGHT}[x], len(on))
+                if x in level:
+                    self.m.Add(assigned >= level[x][0])
+                    self.m.Add(assigned <= level[x][1])
                 if w_skill is not SKIP and need > 0:
                     # 평균 숙련도를 목표에 가깝게: |Σ(숙련도 - 목표)| 감점, 허용 범위(±SKILL_TOLERANCE)를 벗어나면 크게
                     goal = r.rules.parameter("SKILL_MIX", "target")

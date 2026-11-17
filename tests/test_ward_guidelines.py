@@ -63,11 +63,20 @@ def test_generator_avoids_ping_pong():
     assert "PING_PONG" not in ids(validate(out))
 
 
+@pytest.mark.parametrize("pattern, mixed", [("DDEEN", True), ("DDNN", True), ("DN", True),
+                                             ("DDOONN", False), ("DDDEE", False), ("EENNN", False)])
+def test_day_and_night_in_one_work_run_is_ping_pong(pattern, mixed):
+    cells = {1: {DAYS[i]: Duty(x) for i, x in enumerate(pattern)}}
+    vs = validate(Roster(NOV, [nurse(1)], cells, rules(0, 0, 0), 0))
+    assert any(v.rule_id == "PING_PONG" and "섞임" in v.message for v in vs) == mixed
+
+
 def test_skill_mix_near_target():
     # 숙련도 1·5 각 6명: 근무마다 평균 3이 되려면 섞어야 한다
     ns = [nurse(i, skill=1) for i in range(6)] + [nurse(i, skill=5) for i in range(6, 12)]
     r = Roster(NOV, ns, {}, rules(2, 2, 2), 10)
-    out = r.with_cells(generate(r, max_seconds=8))
+    # 적정 인원 균등화·D/N 섞임 금지로 탐색이 늘어 8초로는 부족하다 (20초에서 평균 3.0)
+    out = r.with_cells(generate(r, max_seconds=20))
     avgs = [a for d in DAYS for a in skill_mix(out, d).values()]
     assert all(2.5 <= a <= 3.5 for a in avgs), sorted(avgs)[:3] + sorted(avgs)[-3:]
     low = Roster(NOV, ns, {0: {DAYS[0]: D}, 1: {DAYS[0]: D}}, rules(2, 0, 0), 0)
