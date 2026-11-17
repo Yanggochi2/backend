@@ -201,6 +201,11 @@ def coverage(schedule_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(schedules.coverage(db, user_id, schedule_id))
 
 
+@api.get("/wards/me/schedules/{schedule_id}/staffing-recommendation")
+def staffing_recommendation(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(schedules.staffing_recommendation(db, user_id, schedule_id))
+
+
 @api.get("/wards/me/schedules/{schedule_id}/violations")
 def violations(schedule_id: uuid.UUID, user_id: UserId, db: DB, p: Page, severity: Severity | None = None,
                nurseId: uuid.UUID | None = None, ruleId: uuid.UUID | None = None):  # noqa: N803
