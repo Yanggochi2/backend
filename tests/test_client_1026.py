@@ -153,6 +153,32 @@ def test_unused_offs_allow_confirmation_and_carry_into_february():
     assert sum(c['dutyCode'] == 'O' for c in feb['cells'] if c['nurseId'] == nurse['id']) == feb['offTarget'] + 2
 
 
+def test_keep_entered_regeneration_survives_conflicting_edits_and_new_nurse():
+    """
+    손으로 고친 칸이 필수 규칙과 부딪치고 새 간호사까지 들어온 달에서 '넣어 둔 근무 그대로 두기'로 다시 짜도
+    해가 나와야 한다. 꼭 바꿔야 하는 칸만 바뀌고 나머지 넣어 둔 칸은 그대로다 (#99)
+    """
+    h = ward_head(2, 2, 2)
+    add_nurses(h, 12)
+    s = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-01'}, status=201)
+    assert h.data('POST', f"/wards/me/schedules/{s['id']}/generations", {'maxSeconds': 10})['status'] == 'SUCCEEDED'
+    s = h.data('GET', f"/wards/me/schedules/{s['id']}")
+    day = '2027-01-04'
+    edits = [c['nurseId'] for c in s['cells'] if c['date'] == day and c['dutyCode'] == 'O'][:3]
+    h.data('PATCH', f"/wards/me/schedules/{s['id']}/cells", {'baseVersion': s['version'], 'changes': [
+        {'nurseId': n, 'date': day, 'dutyCode': 'D'} for n in edits]})
+    new = h.data('POST', '/wards/me/nurses', {**NURSE, 'name': '새사람'}, status=201)['id']
+    s = h.data('GET', f"/wards/me/schedules/{s['id']}")
+    before = {(c['nurseId'], c['date']): c['dutyCode'] for c in s['cells'] if c['dutyCode'] not in (None, 'AL', 'ED')}
+    job = h.data('POST', f"/wards/me/schedules/{s['id']}/generations",
+                 {'maxSeconds': 10, 'fixedCells': [{'nurseId': n, 'date': d} for n, d in before]})
+    assert job['status'] == 'SUCCEEDED', job.get('conflicts')
+    after = {(c['nurseId'], c['date']): c['dutyCode'] for c in h.data('GET', f"/wards/me/schedules/{s['id']}")['cells']}
+    changed = [k for k, x in before.items() if after[k] != x]
+    assert len(changed) == job['metrics']['changedKeptCells'] <= 6
+    assert any(after[(new, d)] in ('D', 'E', 'N') for n, d in after if n == new)
+
+
 def test_empty_cells_do_not_carry_whole_off_target():
     """빈 칸이 남은 채 확정돼도 그 칸은 쉰 날로 보고, 근무를 하나도 넣지 않은 사람의 O 목표가 통째로 이월되지 않는다 (#98)"""
     h = ward_head(1, 1, 1)

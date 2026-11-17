@@ -33,6 +33,8 @@ LEVEL_WEIGHT = 1_000  # 듀티별 하루 인원의 일자 간 차이(최대-최�
 OVER_NIGHT_WEIGHT = 600
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
+# "되도록 그대로 둘" 칸(prefer)을 바꿀 때 칸당 감점. 소프트 규칙보다 크고 인원 부족(COVERAGE_WEIGHT)보다 작다
+KEEP_WEIGHT = 2_000
 COMFORT_WEIGHT = 8  # 연속 근무 권장 상한(MAX_CONSECUTIVE_WORK - 1)을 넘을 때 감점 (2단계 소프트)
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
 LOOKBACK_DAYS = 7  # 지난달 말 근무를 이어서 볼 일수 (연속 근무 최대 5일 + 여유)
@@ -45,7 +47,7 @@ DEFAULT_SECONDS = float(os.getenv("GENERATION_DEFAULT_SECONDS", "30"))
 FOUND = (cp_model.OPTIMAL, cp_model.FEASIBLE)
 
 
-def generate(r: Roster, max_seconds: float | None = None) -> Cells:
+def generate(r: Roster, max_seconds: float | None = None, prefer: Cells | None = None) -> Cells:
     """
     두 단계로 푼다. 1단계(시간의 30%)는 하드 규칙(큰 감점)만 줄여 위반 없는 해를 빨리 찾고,
     2단계는 그 해를 시작점으로 소프트 규칙까지 최적화한다. 한 번에 풀면 소프트 감점에 묻혀 하드 위반이 늦게 사라진다
@@ -55,7 +57,16 @@ def generate(r: Roster, max_seconds: float | None = None) -> Cells:
     model.build()
     # 솔버가 해를 못 찾으면 그리디 결과를 쓴다. 시작점은 달력과 O 목표를 반영한 힌트
     best = greedy.generate(r)
-    model.hint(_rotation_hint(r))
+    start = _rotation_hint(r)
+    # prefer: 못 박지는 않지만 되도록 그대로 둘 칸. 바꾸면 칸마다 KEEP_WEIGHT 감점하고, 시작점도 그 값으로 둔다.
+    # prefer가 없으면 모델·시작점은 예전과 똑같다
+    if prefer:
+        for (nurse_id, d), vs in model.free.items():
+            x = prefer.get(nurse_id, {}).get(d)
+            if x in vs:
+                model.cost.append((KEEP_WEIGHT, vs[x].Not()))
+                start.setdefault(nurse_id, {})[d] = x
+    model.hint(start)
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 8
     solver.parameters.random_seed = 0
