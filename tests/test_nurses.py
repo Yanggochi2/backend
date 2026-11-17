@@ -120,8 +120,14 @@ def test_experience_validation_and_nursing_assistant():
         "careerMonths": 60, "affiliationStart": today_kst().isoformat(),
     })
     assert experienced_new_to_ward["skillLevel"] == 2
+    # 다른 병원 경력이 있으면 입사 연도보다 긴 경력도 받는다 (11/16 미팅)
+    prior_hospital = h.data("POST", "/wards/me/nurses", {
+        **NURSE, "name": "타병원경력", "joinedYear": year, "careerMonths": 120,
+    })
+    assert prior_hospital["careerMonths"] == 120
+    # 10년 전에 입사했는데 총 경력이 1년이면 막는다
     err(h("POST", "/wards/me/nurses", {
-        **NURSE, "name": "경력오류", "joinedYear": year, "careerMonths": 120,
+        **NURSE, "name": "경력오류", "joinedYear": year - 10, "careerMonths": 12,
     }), 400, "VALIDATION_ERROR")
     assistant = h.data("POST", "/wards/me/nurses", {
         "name": "김조무", "staffType": "NURSING_ASSISTANT", "status": "ACTIVE",
