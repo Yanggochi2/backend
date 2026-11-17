@@ -198,6 +198,10 @@ class ImportMappingPatch(Body):
     duty_mappings: list[DutyMapping] | None = None
 
 
+class ShareCode(Body):
+    code: str
+
+
 class ChargePut(Body):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
     is_charge: StrictBool
