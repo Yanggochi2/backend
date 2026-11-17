@@ -1,5 +1,14 @@
 """API-NUR-01~05 간호사 관리"""
-from conftest import NURSE, add_nurses, err, member, ward_head
+from conftest import NURSE, YM, add_nurses, confirm_schedule, err, fill_rotation, member, ward_head
+
+
+def _with_confirmed_history(h, count=1) -> list[str]:
+    """확정된 근무표에 근무 기록이 있는 간호사를 만든다 (삭제해도 퇴사 처리로 남는 경우)"""
+    add_nurses(h, 5 - count, "기존")  # fill_rotation은 수간호사 + 간호사 5명 기준
+    new = add_nurses(h, count, "기록")
+    s = h.data("POST", "/wards/me/schedules", {"yearMonth": YM}, status=201)
+    confirm_schedule(h, fill_rotation(h, s))
+    return new
 
 
 def test_register_and_validate():
@@ -56,7 +65,7 @@ def test_retire():
 
 def test_delete_soft_deletes_and_preserves_row():
     h = ward_head()
-    [nurse_id] = add_nurses(h, 1)
+    [nurse_id] = _with_confirmed_history(h)
     assert h("DELETE", f"/wards/me/nurses/{nurse_id}").status_code == 204
     assert all(x["id"] != nurse_id for x in h.data("GET", "/wards/me/nurses"))
     deleted = next(x for x in h.data("GET", "/wards/me/nurses?includeRetired=true") if x["id"] == nurse_id)
@@ -158,8 +167,31 @@ def test_delete_unlinks_only_removed_preceptee():
 
 def test_delete_keeps_earlier_affiliation_end():
     h = ward_head()
-    [a] = add_nurses(h, 1)
+    [a] = _with_confirmed_history(h)
     h.data("PATCH", f"/wards/me/nurses/{a}", {"affiliationEnd": "2025-06-30"})
     assert h("DELETE", f"/wards/me/nurses/{a}").status_code == 204
     gone = next(x for x in h.data("GET", "/wards/me/nurses?includeRetired=true") if x["id"] == a)
     assert gone["affiliationEnd"] == "2025-06-30"
+
+
+def test_delete_without_confirmed_history_removes_row_and_draft_cells():
+    """잘못 등록했다 지우고 다시 등록해도 이번 달 작성 중 근무표에 같은 사람이 여러 줄 생기지 않는다 (11/17)"""
+    from app.business.common import today_kst
+    h = ward_head()
+    add_nurses(h, 3)
+    this_month = today_kst().strftime("%Y-%m")
+    s = h.data("POST", "/wards/me/schedules", {"yearMonth": this_month}, status=201)
+    body = {**NURSE, "name": "반복이"}
+    for _ in range(3):
+        nurse = h.data("POST", "/wards/me/nurses", body, status=201)
+        s = h.data("GET", f"/wards/me/schedules/{s['id']}")
+        day = next(c["date"] for c in s["cells"] if c["nurseId"] == nurse["id"] and c["editable"])
+        h.data("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": s["version"], "changes": [
+            {"nurseId": nurse["id"], "date": day, "dutyCode": "D"}]})
+        assert h("DELETE", f"/wards/me/nurses/{nurse['id']}").status_code == 204
+    s = h.data("GET", f"/wards/me/schedules/{s['id']}")
+    assert [n["name"] for n in s["nurses"]].count("반복이") == 0
+    assert all(x["name"] != "반복이" for x in h.data("GET", "/wards/me/nurses?includeRetired=true"))
+    again = h.data("POST", "/wards/me/nurses", body, status=201)
+    s = h.data("GET", f"/wards/me/schedules/{s['id']}")
+    assert [n["id"] for n in s["nurses"] if n["name"] == "반복이"] == [again["id"]]
