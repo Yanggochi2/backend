@@ -54,15 +54,17 @@ def generate(r: Roster, max_seconds: float | None = None, prefer: Cells | None =
     total = max_seconds or DEFAULT_SECONDS
     model = _Model(r)
     model.build()
-    # prefer: 못 박지는 않지만 되도록 그대로 둘 칸. 바꾸면 칸마다 KEEP_WEIGHT 감점하고, 시작점도 그 값으로 둔다
-    start = _rotation_hint(r)
-    for (nurse_id, d), vs in model.free.items():
-        x = (prefer or {}).get(nurse_id, {}).get(d)
-        if x in vs:
-            model.cost.append((KEEP_WEIGHT, vs[x].Not()))
-            start.setdefault(nurse_id, {})[d] = x
     # 솔버가 해를 못 찾으면 그리디 결과를 쓴다. 시작점은 달력과 O 목표를 반영한 힌트
     best = greedy.generate(r)
+    start = _rotation_hint(r)
+    # prefer: 못 박지는 않지만 되도록 그대로 둘 칸. 바꾸면 칸마다 KEEP_WEIGHT 감점하고, 시작점도 그 값으로 둔다.
+    # prefer가 없으면 모델·시작점은 예전과 똑같다
+    if prefer:
+        for (nurse_id, d), vs in model.free.items():
+            x = prefer.get(nurse_id, {}).get(d)
+            if x in vs:
+                model.cost.append((KEEP_WEIGHT, vs[x].Not()))
+                start.setdefault(nurse_id, {})[d] = x
     model.hint(start)
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 8
