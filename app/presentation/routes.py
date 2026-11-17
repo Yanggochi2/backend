@@ -13,7 +13,7 @@ from app.business import (access, audit, auth, dashboard, excel, generations, nu
 from app.business.common import ApiException, parse_month
 from app.domain.model import DutyRole, NurseStatus, Role, Severity, StaffType
 from app.presentation import schemas as s
-from app.presentation.deps import (ACCESS, REFRESH, AccountId, DB, PREFIX, Page, TxRoute, UserId,
+from app.presentation.deps import (ACCESS, COOKIE_SECURE, REFRESH, AccountId, DB, PREFIX, Page, TxRoute, UserId,
                                    clear_auth_cookies, set_auth_cookies)
 
 api = APIRouter(prefix=PREFIX, route_class=TxRoute)
@@ -201,6 +201,11 @@ def coverage(schedule_id: uuid.UUID, user_id: UserId, db: DB):
     return _d(schedules.coverage(db, user_id, schedule_id))
 
 
+@api.get("/wards/me/schedules/{schedule_id}/staffing-recommendation")
+def staffing_recommendation(schedule_id: uuid.UUID, user_id: UserId, db: DB):
+    return _d(schedules.staffing_recommendation(db, user_id, schedule_id))
+
+
 @api.get("/wards/me/schedules/{schedule_id}/violations")
 def violations(schedule_id: uuid.UUID, user_id: UserId, db: DB, p: Page, severity: Severity | None = None,
                nurseId: uuid.UUID | None = None, ruleId: uuid.UUID | None = None):  # noqa: N803
@@ -330,11 +335,32 @@ def revoke_share(schedule_id: uuid.UUID, user_id: UserId, db: DB):
 
 
 @api.get("/shared/schedules/{token}")
-def shared_schedule(token: str, db: DB, response: Response, sort: str | None = None,
+def shared_schedule(token: str, db: DB, request: Request, response: Response, sort: str | None = None,
                     q: str | None = Query(None, max_length=100)):
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
-    return _d(sharing.get(db, token, sort, q))
+    access = request.cookies.get(sharing.access_cookie_name(token))
+    return _d(sharing.get(db, token, sort, q, access))
+
+
+@api.post("/shared/schedules/{token}/access", status_code=204)
+def unlock_shared(token: str, body: s.ShareCode, db: DB, response: Response):
+    """공유 코드 확인. 맞으면 이 링크용 접근 쿠키를 준다 (메신저에서 링크를 열어도 보내지도록 SameSite=Lax)"""
+    value = sharing.unlock(db, token, body.code)
+    if value is not None:
+        response.set_cookie(sharing.access_cookie_name(token), value, httponly=True, secure=COOKIE_SECURE,
+                            samesite="lax", path="/", max_age=int(sharing.ACCESS_TTL.total_seconds()))
+    response.status_code = 204
+
+
+@api.put("/wards/me/share-code")
+def set_share_code(body: s.ShareCode, user_id: UserId, db: DB):
+    return _d(sharing.set_code(db, user_id, body.code))
+
+
+@api.delete("/wards/me/share-code", status_code=204)
+def clear_share_code(user_id: UserId, db: DB):
+    sharing.clear_code(db, user_id)
 
 
 @api.get("/wards/me/dashboard")

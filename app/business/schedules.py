@@ -12,7 +12,7 @@ from app.business import audit, members, notifications, rules
 from app.business.common import (ApiException, bad_request, conflict, iso, month_end, not_found, page, parse_month,
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
-from app.domain import validator
+from app.domain import staffing, validator
 from app.domain.nurse_sort import sorted_nurses
 from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Roster,
                               ScheduleStatus, Severity, Violation)
@@ -60,6 +60,12 @@ def get(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, sort: str | Non
 def coverage(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> list[dict]:
     m = members.require(db, user_id)
     return _coverage(roster(db, find(db, m, schedule_id)))
+
+
+def staffing_recommendation(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
+    """그 달 인력(연차·O 목표 반영)에 맞는 D/E/N 하루 인원 추천"""
+    m = members.require_head(db, user_id)
+    return staffing.recommend(roster(db, find(db, m, schedule_id)))
 
 
 def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_version: int,
@@ -144,7 +150,7 @@ def violations(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, severity
 
 
 def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledged: set[uuid.UUID]) -> dict:
-    """SCH-07. 대기 신청 0 · 하드 위반 0 · 모든 소프트 위반 확인(acknowledged)이어야 확정"""
+    """SCH-07. 대기 신청 0 · 하드 위반 0이면 확정. acknowledged는 하위 호환으로 받기만 한다"""
     m = members.require_head(db, user_id)
     s = find(db, m, schedule_id)
     db.refresh(s, with_for_update=True)  # 신청 생성(requests.create)과 직렬화: 확정 직전 들어온 신청을 놓치지 않게
@@ -159,9 +165,8 @@ def confirm(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, acknowledge
     hard = [v for v in vs if v["severity"] == Severity.HARD]
     if hard:
         raise conflict("HARD_VIOLATIONS_EXIST", f"하드 위반 {len(hard)}건이 있어 확정할 수 없습니다", hard)
-    missing = [v for v in vs if v["id"] not in acknowledged]
-    if missing:
-        raise conflict("SOFT_VIOLATIONS_UNACKNOWLEDGED", f"확인하지 않은 소프트 위반 {len(missing)}건이 있습니다", missing)
+    # 소프트 위반은 확정을 막지 않는다. 확정 창에서 확정하는 것이 남은 소프트 위반 전체 확인이다.
+    # 위반 목록 조회는 최대 100건이라 개별 id 확인을 요구하면 100건 넘는 달은 확정할 수 없었다
     s.status, s.confirmed_at, s.confirmed_by = ScheduleStatus.CONFIRMED, now(), user_id
     s.confirm_count += 1
     _unlock(s)

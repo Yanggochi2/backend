@@ -177,3 +177,24 @@ def test_keep_entered_regeneration_survives_conflicting_edits_and_new_nurse():
     changed = [k for k, x in before.items() if after[k] != x]
     assert len(changed) == job['metrics']['changedKeptCells'] <= 6
     assert any(after[(new, d)] in ('D', 'E', 'N') for n, d in after if n == new)
+
+
+def test_empty_cells_do_not_carry_whole_off_target():
+    """빈 칸이 남은 채 확정돼도 그 칸은 쉰 날로 보고, 근무를 하나도 넣지 않은 사람의 O 목표가 통째로 이월되지 않는다 (#98)"""
+    h = ward_head(1, 1, 1)
+    add_nurses(h, 6)
+    jan = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-01'}, status=201)
+    assert h.data('POST', f"/wards/me/schedules/{jan['id']}/generations", {'maxSeconds': 5})['status'] == 'SUCCEEDED'
+    late = h.data('POST', '/wards/me/nurses', {**NURSE, 'name': '늦게온사람'}, status=201)['id']
+    jan = h.data('GET', f"/wards/me/schedules/{jan['id']}")
+    assert all(c['dutyCode'] is None for c in jan['cells'] if c['nurseId'] == late)
+    nurse = next(n for n in jan['nurses'] if n['role'] != 'HEAD_NURSE' and n['id'] != late)
+    offs = [c['date'] for c in jan['cells'] if c['nurseId'] == nurse['id'] and c['dutyCode'] == 'O'][:2]
+    h.data('PATCH', f"/wards/me/schedules/{jan['id']}/cells", {'baseVersion': jan['version'], 'changes': [
+        {'nurseId': nurse['id'], 'date': d, 'dutyCode': 'AL'} for d in offs]})
+    confirm_schedule(h, h.data('GET', f"/wards/me/schedules/{jan['id']}"))
+
+    feb = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-02'}, status=201)
+    carry = {s['nurseId']: s['offCarry'] for s in feb['statistics']}
+    assert carry[late] == 0
+    assert carry[nurse['id']] == 2
