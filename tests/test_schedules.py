@@ -80,8 +80,9 @@ def test_violations_and_confirm():
     assert hard["meta"]["totalElements"] > 5 and {v["ruleCode"] for v in hard["data"]} <= {"COVERAGE", "OFF_TARGET"}
     s = fill_rotation(h, s)
     assert s["readiness"]["hardViolations"] == 0 and s["readiness"]["confirmable"]
-    soft = [v["id"] for v in h.data("GET", f"/wards/me/schedules/{s['id']}/violations?size=100")]
-    c = h.data("POST", f"/wards/me/schedules/{s['id']}/confirm", {"acknowledgedSoftViolationIds": soft})
+    # 소프트 위반은 확정을 막지 않는다 (목록은 100건 상한이라 개별 확인을 요구하면 큰 병동은 확정 불가였다)
+    assert s["readiness"]["softViolations"] > 0
+    c = h.data("POST", f"/wards/me/schedules/{s['id']}/confirm", {})
     assert c["status"] == "CONFIRMED" and c["confirmedAt"] and not any(x["editable"] for x in c["cells"])
     err(h("POST", f"/wards/me/schedules/{s['id']}/confirm", {}), 409, "INVALID_SCHEDULE_STATE")
     err(h("PATCH", f"/wards/me/schedules/{s['id']}/cells", {"baseVersion": c["version"], "changes": [
