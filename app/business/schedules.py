@@ -368,6 +368,27 @@ def clear_after(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID, end: date)
     return cleared, confirmed
 
 
+def has_confirmed_cells(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID) -> bool:
+    """확정·보관된 근무표에 이 간호사의 칸이 하나라도 있는지 (남겨야 할 근무 기록이 있는지)"""
+    return db.scalar(select(Assignment.id).join(Schedule, Schedule.id == Assignment.schedule_id).where(
+        Schedule.ward_id == ward_id, Schedule.status.in_(VISIBLE_TO_NURSES), Assignment.nurse_id == nurse_id).limit(1)) is not None
+
+
+def purge_drafts(db: Session, ward_id: uuid.UUID, nurse_id: uuid.UUID) -> list[str]:
+    """작성 중 근무표에서 이 간호사의 칸을 모두 지운다 (version 증가). 지운 월을 돌려준다"""
+    cleared = []
+    for s in db.scalars(select(Schedule).where(Schedule.ward_id == ward_id, Schedule.status == ScheduleStatus.DRAFT)
+                        .order_by(Schedule.year_month)):
+        mine = [a for a in _assignments(db, s.id) if a.nurse_id == nurse_id]
+        if not mine:
+            continue
+        for a in mine:
+            db.delete(a)
+        touch(db, s)
+        cleared.append(s.year_month)
+    return cleared
+
+
 def is_confirmed(db: Session, ward_id: uuid.UUID, d: date, lock: bool = False) -> bool:
     """확정·보관된 월인지. lock이면 확정(confirm)과 직렬화되도록 근무표 행을 잠근다"""
     s = by_month(db, ward_id, d.replace(day=1), lock)

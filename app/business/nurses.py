@@ -10,7 +10,7 @@ from app.business.common import (bad_request, conflict, iso, not_found, page, to
 from app.business.members import Member
 from app.domain.model import DutyRole, NurseStatus, Role, StaffType
 from app.domain.nurse_sort import sorted_nurses
-from app.persistence.models import Nurse
+from app.persistence.models import Nurse, WorkRequest
 
 FIELDS = {"name": "name", "staffType": "staff_type", "dutyRole": "duty_role", "status": "status", "joinedYear": "joined_year",
           "isPreceptor": "is_preceptor", "careerMonths": "career_months", "skillLevel": "skill_level",
@@ -118,9 +118,17 @@ def _unlink_preceptee(db: Session, m: Member, n: Nurse) -> list[tuple[Nurse, dic
 
 
 def remove(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> None:
-    """화면의 삭제 동작. 과거 근무표 참조를 보존하기 위해 실제 행은 퇴사 처리한다."""
+    """
+    화면의 삭제 동작. 확정된 근무표에 근무 기록이 있으면 그 기록을 지키려고 퇴사 처리(soft delete)한다.
+    기록이 없으면(잘못 등록했다 지우는 경우) 행을 실제로 지운다. 퇴사 처리하면 소속 기간이 이번 달과 겹쳐
+    작성 중 근무표에 빈 줄로 남고, 같은 사람을 다시 등록할 때마다 줄이 늘어난다 (11/17 확인).
+    """
     m = members.require_head(db, user_id)
     n = _get(db, m, nurse_id)
+    if (n.user_id is None and n.role != Role.HEAD_NURSE
+            and not schedules.has_confirmed_cells(db, m.ward_id, n.id)):
+        _purge(db, m, user_id, n)
+        return
     end = max(today_kst(), n.affiliation_start)
     if n.affiliation_end is not None and n.affiliation_end < end:
         end = n.affiliation_end  # 이미 정해 둔 더 이른 종료일을 늦추지 않는다
@@ -130,6 +138,21 @@ def remove(db: Session, user_id: uuid.UUID, nurse_id: uuid.UUID) -> None:
     if cleared or confirmed:
         audit.log(db, m.ward_id, user_id, "NURSE_SCHEDULE_CLEARED", "NURSE", n.id, None,
                   f"cleared={cleared} confirmed={confirmed}")
+
+
+def _purge(db: Session, m: Member, user_id: uuid.UUID, n: Nurse) -> None:
+    """확정 기록이 없는 간호사를 실제로 지운다. 작성 중 근무표의 칸·신청·담당 신입 연결도 함께 지운다"""
+    before = view(n, True)
+    unlinked = _unlink_preceptee(db, m, n)
+    cleared = schedules.purge_drafts(db, m.ward_id, n.id)
+    for r in db.scalars(select(WorkRequest).where(WorkRequest.nurse_id == n.id)):
+        db.delete(r)
+    db.flush()
+    db.delete(n)
+    db.flush()
+    audit.log(db, m.ward_id, user_id, "NURSE_DELETED", "NURSE", n.id, before, f"cleared={cleared}")
+    for p, prev in unlinked:
+        audit.log(db, m.ward_id, user_id, "NURSE_UPDATED", "NURSE", p.id, prev, view(p, True))
 
 
 def view(n: Nurse, full: bool) -> dict:
