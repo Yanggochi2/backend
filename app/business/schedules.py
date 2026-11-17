@@ -12,7 +12,7 @@ from app.business import audit, members, notifications, rules
 from app.business.common import (ApiException, bad_request, conflict, iso, month_end, not_found, page, parse_month,
                                  require_reason, sha256, unprocessable)
 from app.business.members import Member
-from app.domain import validator
+from app.domain import staffing, validator
 from app.domain.nurse_sort import sorted_nurses
 from app.domain.model import (Cells, Duty, NotificationType, NurseStatus, RequestStatus, RequestType, Roster,
                               ScheduleStatus, Severity, Violation)
@@ -60,6 +60,12 @@ def get(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, sort: str | Non
 def coverage(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> list[dict]:
     m = members.require(db, user_id)
     return _coverage(roster(db, find(db, m, schedule_id)))
+
+
+def staffing_recommendation(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID) -> dict:
+    """그 달 인력(연차·O 목표 반영)에 맞는 D/E/N 하루 인원 추천"""
+    m = members.require_head(db, user_id)
+    return staffing.recommend(roster(db, find(db, m, schedule_id)))
 
 
 def edit_cells(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, base_version: int,
