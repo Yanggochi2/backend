@@ -33,6 +33,7 @@ LEVEL_WEIGHT = 1_000  # 듀티별 하루 인원의 일자 간 차이(최대-최�
 OVER_NIGHT_WEIGHT = 600
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
+COMFORT_RUN, COMFORT_WEIGHT = 4, 8  # 연속 근무 권장 상한과 넘을 때 감점 (2단계 소프트)
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
 LOOKBACK_DAYS = 7  # 지난달 말 근무를 이어서 볼 일수 (연속 근무 최대 5일 + 여유)
 WORK, REST = "WORK", "REST"
@@ -298,6 +299,12 @@ class _Model:
                     self.forbid(alone + [self.lit(n, d - one, WORK)], w_blk)
                     self.forbid(alone + [self.lit(n, d + one, WORK)], w_blk)
         self._weekly_rest(n)
+        # 인간미: 하드 상한(5일)까지 꽉 채우지 말고 4일 근무 후 쉬게, E 다음 바로 N(EENNN처럼 긴 묶음)은 피한다
+        t = self.timeline
+        for i in range(len(t) - COMFORT_RUN):
+            self.forbid([self.lit(n, d, WORK) for d in t[i:i + COMFORT_RUN + 1]], COMFORT_WEIGHT)
+        for a, b in zip(t, t[1:]):
+            self.forbid([self.lit(n, a, Duty.E), self.lit(n, b, Duty.N)], COMFORT_WEIGHT)
         w = self.weight("PRECEPTOR_MISMATCH")
         for c in n.preceptees:
             child = next((o for o in r.nurses if o.id == c), None)
