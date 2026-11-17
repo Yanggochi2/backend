@@ -95,12 +95,17 @@ def off_target(r: Roster, n) -> int:
 
 
 def unused_offs(r: Roster) -> dict:
-    """그 달에 O 목표보다 덜 쉰 만큼 (다음 달로 이월). 교대 근무 간호사만, 초과 사용은 깎지 않는다"""
+    """
+    그 달에 O 목표보다 덜 쉰 만큼 (다음 달로 이월). 교대 근무 간호사만, 초과 사용은 깎지 않는다.
+    비어 있는(미배정) 날은 쉬었는지 일했는지 모르므로 쉰 날로 본다. 그래야 근무를 넣지 않은 채 확정된 사람의
+    O 목표 전체가 다음 달로 넘어가지 않는다 (#98)
+    """
     out = {}
     for n in r.nurses:
         if n.weekday_only or n.status == NurseStatus.ON_LEAVE or r.off_target <= 0:
             continue
-        left = off_target(r, n) - sum(1 for d in r.days() if n.affiliated(d) and r.cell(n.id, d) == Duty.O)
+        days = [d for d in r.days() if n.affiliated(d)]
+        left = off_target(r, n) - sum(1 for d in days if r.cell(n.id, d) in (Duty.O, None))
         if left > 0:
             out[n.id] = left
     return out
