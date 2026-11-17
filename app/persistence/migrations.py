@@ -4,6 +4,11 @@ from sqlalchemy import inspect, text
 
 def upgrade(engine):
     with engine.begin() as connection:
+        if "wards" in inspect(connection).get_table_names():
+            columns = {c["name"] for c in inspect(connection).get_columns("wards")}
+            for name in ("share_code_hash", "share_code_salt"):
+                if name not in columns:
+                    connection.execute(text(f"ALTER TABLE wards ADD COLUMN {name} VARCHAR(64)"))
         if "nurses" in inspect(connection).get_table_names():
             columns = {c["name"] for c in inspect(connection).get_columns("nurses")}
             if "is_preceptor" not in columns:

@@ -54,6 +54,10 @@ class Ward(Base):
     # AUTH-05. 재발급 시 덮어써서 기존 코드는 즉시 무효
     code: Mapped[str] = mapped_column(String(8), unique=True)
     code_issued_at: Mapped[datetime] = mapped_column(default=now)
+    # 공유 링크 1차 보안 코드 (9차 미팅). 해시만 저장한다. salt는 코드를 정할 때마다 새로 만들어
+    # 바꾸면 이전에 코드를 입력해 받은 공유 접근 쿠키가 모두 무효가 된다. 없으면 코드 없이 열린다
+    share_code_hash: Mapped[str | None] = mapped_column(String(64))
+    share_code_salt: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(default=now)
     version: Mapped[int] = mapped_column(default=0)
     __mapper_args__ = {"version_id_col": version}

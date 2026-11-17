@@ -87,3 +87,37 @@ def test_manager_schedule_sort_defaults_and_name_option():
     assert h.data('GET', path + '?sort=name')['nurses'][0]['name'] == '가나다00'
     assert h.data('GET', f'/wards/me/schedules?yearMonth={YM}&sort=name')['nurses'][0]['name'] == '가나다00'
     err(h('GET', path + '?sort=skillLevel'), 400, 'INVALID_SORT')
+
+
+def test_share_code_gates_shared_schedule():
+    """수간호사가 공유 코드를 정하면 코드를 맞힌 브라우저만 공유 근무표를 본다 (9차 미팅)"""
+    h, s = confirmed()
+    token = h.data("POST", f"/wards/me/schedules/{s['id']}/share-link")['shareToken']
+    path = f"/shared/schedules/{token}"
+    assert h.data("GET", "/wards/me")['shareCodeSet'] is False
+    err(h("PUT", "/wards/me/share-code", {"code": "abc"}), 400, "VALIDATION_ERROR")
+    assert h.data("PUT", "/wards/me/share-code", {"code": "외과2025"}) == {"shareCodeSet": True}
+    assert h.data("GET", "/wards/me")['shareCodeSet'] is True
+
+    nurse = Api()
+    err(nurse("GET", path), 401, "SHARE_CODE_REQUIRED")
+    err(nurse("POST", f"{path}/access", {"code": "틀린코드"}), 403, "SHARE_CODE_INVALID")
+    assert nurse("POST", f"{path}/access", {"code": " 외과2025 "}).status_code == 204
+    assert nurse("GET", path).status_code == 200
+
+    # 코드를 바꾸면 전에 받은 접근은 무효
+    h.data("PUT", "/wards/me/share-code", {"code": "내과2026"})
+    err(nurse("GET", path), 401, "SHARE_CODE_REQUIRED")
+    # 끄면 누구나 다시 본다
+    assert h("DELETE", "/wards/me/share-code").status_code == 204
+    assert Api()("GET", path).status_code == 200
+
+
+def test_share_code_attempts_are_limited():
+    h, s = confirmed()
+    token = h.data("POST", f"/wards/me/schedules/{s['id']}/share-link")['shareToken']
+    h.data("PUT", "/wards/me/share-code", {"code": "외과2025"})
+    guess = Api()
+    for i in range(10):
+        err(guess("POST", f"/shared/schedules/{token}/access", {"code": f"추측{i:04}"}), 403, "SHARE_CODE_INVALID")
+    err(guess("POST", f"/shared/schedules/{token}/access", {"code": "외과2025"}), 429, "RATE_LIMITED")

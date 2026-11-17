@@ -28,7 +28,8 @@ _join_attempts = RateLimiter(10, timedelta(hours=1))
 def view(db: Session, ward_id: uuid.UUID) -> dict:
     w = db.get(Ward, ward_id)
     return {"id": w.id, "hospitalName": w.hospital_name, "wardName": w.ward_name,
-            "requiredStaff": rules.staffing(db, w.id), "createdAt": iso(w.created_at)}
+            "requiredStaff": rules.staffing(db, w.id), "shareCodeSet": w.share_code_hash is not None,
+            "createdAt": iso(w.created_at)}
 
 
 def get(db: Session, user_id: uuid.UUID) -> dict:
