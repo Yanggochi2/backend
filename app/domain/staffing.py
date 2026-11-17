@@ -28,7 +28,15 @@ def recommend(r: Roster) -> dict:
     evening = (total - night) // 2
     rec = {"D": total - night - evening, "E": evening, "N": night}
     current = {x.value: r.rules.required(x) for x in (Duty.D, Duty.E, Duty.N)}
-    demand = sum(current.values()) * len(days)
+    # 수요는 교대 간호사 몫만: 커버리지는 평일 D 고정 인원도 D로 세므로 그날 그만큼 D 필요 인원에서 뺀다
+    fixed_d = [n for n in r.nurses
+               if n.staff_type == StaffType.NURSE and n.status != NurseStatus.ON_LEAVE and n.weekday_only]
+    demand = 0
+    for d in days:
+        demand += sum(current.values())
+        if d.weekday() < 5 and d not in r.holidays:
+            on_d = sum(n.affiliated(d) and r.cell(n.id, d) in (None, Duty.D) for n in fixed_d)
+            demand -= min(current["D"], on_d)
     return {"recommended": rec, "current": current, "supply": supply, "demand": demand,
             # 양수: 남는 근무일(연차·초과 D로 흘러감), 음수: 모자란 근무일(O 미사용·이월)
             "surplus": supply - demand}
@@ -50,6 +58,12 @@ if __name__ == "__main__":
     r = roster(22)
     r = r.with_cells({0: {date(2026, 11, d): Duty.AL for d in range(1, 21)}})
     assert recommend(r)["supply"] == 420
+    # 차지의 평일 D는 커버리지에 들어가므로 수요에서 뺀다 (2026-11 평일 21일)
+    r = roster(22)
+    r = Roster(r.month, r.nurses + [NurseInfo(99, "c", DutyRole.CHARGE, NurseStatus.ACTIVE, date(2025, 1, 1))],
+               {}, r.rules, 10)
+    out = recommend(r)
+    assert out["supply"] == 440 and out["demand"] == 12 * 30 - 21, out
     # 임신 간호사만 있으면 N 0
     assert recommend(roster(6, status=NurseStatus.PREGNANT))["recommended"]["N"] == 0
     print("ok")

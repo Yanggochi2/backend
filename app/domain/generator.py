@@ -33,7 +33,7 @@ LEVEL_WEIGHT = 1_000  # 듀티별 하루 인원의 일자 간 차이(최대-최�
 OVER_NIGHT_WEIGHT = 600
 # 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
-COMFORT_RUN, COMFORT_WEIGHT = 4, 8  # 연속 근무 권장 상한과 넘을 때 감점 (2단계 소프트)
+COMFORT_WEIGHT = 8  # 연속 근무 권장 상한(MAX_CONSECUTIVE_WORK - 1)을 넘을 때 감점 (2단계 소프트)
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
 LOOKBACK_DAYS = 7  # 지난달 말 근무를 이어서 볼 일수 (연속 근무 최대 5일 + 여유)
 WORK, REST = "WORK", "REST"
@@ -299,11 +299,13 @@ class _Model:
                     self.forbid(alone + [self.lit(n, d - one, WORK)], w_blk)
                     self.forbid(alone + [self.lit(n, d + one, WORK)], w_blk)
         self._weekly_rest(n)
-        # 인간미: 하드 상한(5일)까지 꽉 채우지 말고 4일 근무 후 쉬게 한다.
+        # 인간미: 연속 근무 상한까지 꽉 채우지 말고 하루 덜 일한 뒤 쉬게 한다.
+        # 평일 D 고정(수간호사·차지)은 월~금 5일이 정상이라 뺀다. 상한 규칙을 끄면 권장 상한도 없다
         # E→N 감점은 E 횟수 공정성(28인 테스트)을 흔들어 뺐다. N을 줄이는 건 인원 추천(staffing)에서 한다
-        t = self.timeline
-        for i in range(len(t) - COMFORT_RUN):
-            self.forbid([self.lit(n, d, WORK) for d in t[i:i + COMFORT_RUN + 1]], COMFORT_WEIGHT)
+        if not n.weekday_only and self.rules.enabled("MAX_CONSECUTIVE_WORK"):
+            t, k = self.timeline, self.rules.parameter("MAX_CONSECUTIVE_WORK", "max") - 1
+            for i in range(len(t) - k if k > 0 else 0):
+                self.forbid([self.lit(n, d, WORK) for d in t[i:i + k + 1]], COMFORT_WEIGHT)
         w = self.weight("PRECEPTOR_MISMATCH")
         for c in n.preceptees:
             child = next((o for o in r.nurses if o.id == c), None)
