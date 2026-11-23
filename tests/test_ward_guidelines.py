@@ -7,6 +7,7 @@ import pytest
 from app.domain.generator import generate
 from app.domain.model import Duty, DutyRole, NurseInfo, NurseStatus, Preset, Role, Roster, Rules, Severity
 from app.domain.rule_catalog import parameters
+from app.domain.staffing import off_cut
 from app.domain.validator import off_target, skill_mix, unused_offs, validate
 
 NOV = date(2026, 11, 1)  # 일요일 시작, 주말 9일
@@ -78,7 +79,8 @@ def test_skill_mix_near_target():
     # 적정 인원 균등화·D/N 섞임 금지로 탐색이 늘어 8초로는 부족하다 (20초에서 평균 3.0)
     out = r.with_cells(generate(r, max_seconds=20))
     avgs = [a for d in DAYS for a in skill_mix(out, d).values()]
-    assert all(2.5 <= a <= 3.5 for a in avgs), sorted(avgs)[:3] + sorted(avgs)[-3:]
+    # 남는 인력을 D/E/N에 나눠 근무가 3명인 날이 있다. 1·5만 있으면 3명 평균은 2.33/3.67이 최선 (섞지 않으면 1 또는 5)
+    assert all(7 / 3 - 0.01 <= a <= 11 / 3 + 0.01 for a in avgs), sorted(avgs)[:3] + sorted(avgs)[-3:]
     low = Roster(NOV, ns, {0: {DAYS[0]: D}, 1: {DAYS[0]: D}}, rules(2, 0, 0), 0)
     assert any(v.rule_id == "SKILL_MIX" and v.date == DAYS[0] and v.severity == Severity.SOFT for v in validate(low))
 
@@ -98,8 +100,10 @@ def test_generator_gives_carried_offs():
     ns = [nurse(i) for i in range(1, 11)]
     r = Roster(NOV, ns, {}, rules(2, 2, 2), 10, off_carry={1: 2})
     out = r.with_cells(generate(r, max_seconds=5))
-    assert sum(out.cell(1, d) == O for d in DAYS) == 12
-    assert not any(v.rule_id == "OFF_TARGET" and v.nurse_id == 1 for v in validate(out))
+    # 이월 2개가 목표에 더해진다(12). 인력이 남아 적정 인원을 올림으로 고정하면 모두 같이 off_cut만큼 덜 쉰다 (11/23)
+    fewest, most = off_cut(r)
+    assert 12 - most <= sum(out.cell(1, d) == O for d in DAYS) <= 12 - fewest
+    assert sum(out.cell(2, d) == O for d in DAYS) <= 10 - fewest, "이월 없는 사람보다 이월 받은 사람이 더 쉰다"
 
 
 @pytest.mark.parametrize("code,bad", [("NIGHT_REST", {"nights": 0}), ("SKILL_MIX", {"target": 6}),

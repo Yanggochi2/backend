@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.business import audit, members, rules, schedules
 from app.business.common import bad_request, conflict, iso, not_found, unprocessable
-from app.domain import generator, validator
+from app.domain import generator, staffing, validator
 from app.domain.model import Cells, Duty, GenerationStatus, Severity
 from app.persistence.db import now
 from app.persistence.models import GenerationJob
@@ -23,7 +23,8 @@ RUNNING = (GenerationStatus.QUEUED, GenerationStatus.RUNNING)
 
 
 def start(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, fixed: list[tuple[uuid.UUID, date]],
-          max_seconds: int | None, lock_token: str | None) -> dict:
+          max_seconds: int | None, lock_token: str | None, allow_shortage: bool = False) -> dict:
+    """allow_shortage: 인원이 모자란 줄 알고도 만든다 (수간호사가 STAFFING_SHORTAGE 경고를 보고 고른 경우)"""
     m = members.require_head(db, user_id)
     s = schedules.find(db, m, schedule_id)
     schedules.editable(db, s, m, lock_token, None)
@@ -38,6 +39,11 @@ def start(db: Session, user_id: uuid.UUID, schedule_id: uuid.UUID, fixed: list[t
     for nurse_id, d in fixed:
         if nurse_id not in rows or d.replace(day=1) != r.month:
             raise unprocessable("PRECONDITION_FAILED", f"이 근무표의 셀이 아닙니다: {nurse_id} {d}")
+    # 인원이 모자라면 생성 전에 막는다. 필요 인원을 낮추는 대신 몇 명이 모자란지 알린다 (11/23 미팅)
+    if not allow_shortage and (short := staffing.shortage(r)):
+        raise unprocessable("STAFFING_SHORTAGE",
+                            f"지금 인원으로는 하루 필요 인원을 채울 수 없습니다. 간호사 약 {short['nursesNeeded']}명이 더 필요합니다",
+                            short)
 
     started = time.monotonic()
     # 연차(AL)·교육/학회(ED)와 고정 셀만 남기고 나머지를 다시 짠다
@@ -118,7 +124,7 @@ def relax(db: Session, user_id: uuid.UUID, job_id: uuid.UUID, relaxation_ids: li
     for i in relaxation_ids:
         rules.soften(db, m, offered[i], f"자동 생성 완화안 (job:{job.id})")
     fixed = [(uuid.UUID(n), date.fromisoformat(d)) for n, d in job.fixed_cells]
-    return start(db, user_id, job.schedule_id, fixed, job.max_seconds, lock_token)
+    return start(db, user_id, job.schedule_id, fixed, job.max_seconds, lock_token, allow_shortage=True)
 
 
 def apply_partial(db: Session, user_id: uuid.UUID, job_id: uuid.UUID, base_version: int,

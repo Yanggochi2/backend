@@ -502,12 +502,15 @@ def _draft(db: Session, m: Member, schedule_id: uuid.UUID) -> Schedule:
 
 
 def _coverage(r: Roster) -> list[dict]:
+    """requiredCount: 그날 적정 인원(인력이 남으면 필요 인원보다 많다). minimumCount: 병동 설정의 최소 필요 인원"""
     out = []
+    goals = staffing.targets(r)
     for d in r.days():
         c = validator.coverage(r, d)
         for duty in (Duty.D, Duty.E, Duty.N):
-            have, need = c.get(duty, 0), r.rules.required(duty)
+            have, need = c.get(duty, 0), goals[d][duty]
             out.append({"date": d.isoformat(), "dutyCode": duty, "actualCount": have, "requiredCount": need,
+                        "minimumCount": r.rules.required(duty),
                         "status": "UNDER" if have < need else "MET" if have == need else "OVER"})
     return out
 

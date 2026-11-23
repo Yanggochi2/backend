@@ -268,7 +268,7 @@ def start_generation(schedule_id: uuid.UUID, user_id: UserId, db: DB, body: s.Ge
                      lock: LockToken = None):
     body = body or s.GenerationStart()
     fixed = [(c.nurse_id, c.date) for c in body.fixed_cells]
-    return _d(generations.start(db, user_id, schedule_id, fixed, body.max_seconds, lock))
+    return _d(generations.start(db, user_id, schedule_id, fixed, body.max_seconds, lock, body.allow_shortage))
 
 
 @api.get("/wards/me/generations/{job_id}")

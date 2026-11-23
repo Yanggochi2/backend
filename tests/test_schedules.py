@@ -18,8 +18,10 @@ def test_create_and_read():
     assert len(s["cells"]) == 6 * len({c["date"] for c in s["cells"]}) and all(c["editable"] for c in s["cells"])
     assert h.data("GET", f"/wards/me/schedules?yearMonth={YM}")["id"] == s["id"]
     cov = h.data("GET", f"/wards/me/schedules/{s['id']}/coverage")
-    assert cov[0] == {"date": NEXT.isoformat(), "dutyCode": "D", "actualCount": 0, "requiredCount": 1,
-                      "status": "UNDER"}
+    # requiredCount: 적정 인원(6명이라 인력이 남아 최소 1명보다 많다), minimumCount: 병동 설정 최소 인원
+    assert cov[0] == {"date": NEXT.isoformat(), "dutyCode": "D", "actualCount": 0,
+                      "requiredCount": cov[0]["requiredCount"], "minimumCount": 1, "status": "UNDER"}
+    assert cov[0]["requiredCount"] > 1
 
 
 def test_nurse_cannot_see_draft():
@@ -43,7 +45,8 @@ def test_edit_cells_is_atomic_and_versioned():
     r = h.data("PATCH", url, {"baseVersion": s["version"], "changes": [{"nurseId": a, "date": d1, "dutyCode": "D"},
                                                                        {"nurseId": b, "date": d1, "dutyCode": "N"}]})
     assert r["version"] == s["version"] + 1 and r["changedCells"] == 2
-    assert next(c for c in r["coverage"] if c["date"] == d1 and c["dutyCode"] == "D")["status"] == "MET"
+    d = next(c for c in r["coverage"] if c["date"] == d1 and c["dutyCode"] == "D")
+    assert d["actualCount"] == 1 and d["status"] == ("MET" if d["requiredCount"] == 1 else "UNDER")
     r = h.data("PATCH", url, {"baseVersion": r["version"], "changes": [{"nurseId": a, "date": d1, "dutyCode": None}]})
     assert r["changedCells"] == 1
 
