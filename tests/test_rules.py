@@ -43,7 +43,8 @@ def test_generator_satisfies_hard_rules_when_staff_is_enough():
     # 차지 1명뿐이라 근무마다 차지·고연차는 끈다
     for code in ("CHARGE_EVERY_SHIFT", "SENIOR_EVERY_SHIFT"):
         rules.settings[code] = replace(rules.settings[code], enabled=False)
-    cells = generate(Roster(OCT, ns, {5: {day(9): Duty.AL}}, rules, 0))
+    # 인력이 남아 1단계에서 E·N 횟수 차이도 막으므로 테스트 기본 2초로는 모자라다. 실제 기본값은 30초
+    cells = generate(Roster(OCT, ns, {5: {day(9): Duty.AL}}, rules, 0), max_seconds=5)
     out = Roster(OCT, ns, cells, rules, 0)
     assert out.cell(5, day(9)) == Duty.AL, "연차는 유지"
     assert [v for v in validate(out) if v.severity == Severity.HARD] == []

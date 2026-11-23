@@ -147,6 +147,7 @@ class _Model:
         self.days = r.days()
         # 적정 인원을 매일 같게 맞추느라 O를 덜 주는 개수 (최소, 최대). 덜 준 O는 다음 달로 이월
         self.off_cut = staffing.off_cut(r)
+        self.surplus = staffing.recommend(r)["surplus"] > 0  # 인력이 남아 적정 인원을 올리는 달
         self.timeline = [self.days[0] - timedelta(days=k) for k in range(LOOKBACK_DAYS, 0, -1)] + self.days
         self.cost: list = []  # (가중치, 선형식)
         self.free: dict = {}  # (간호사 id, 날짜) -> {Duty: BoolVar}
@@ -453,6 +454,11 @@ class _Model:
                 self.m.Add(hi >= c)
                 self.m.Add(lo <= c)
             self.cost.append((100 if kind in (Duty.E, Duty.N) else FAIRNESS_WEIGHT, hi - lo))
+            if kind in (Duty.E, Duty.N) and self.surplus and not self.soften_hard:
+                # 2단계에서만 줄이면 적정 인원으로 E가 늘어난 달에 CPU 부하가 있을 때 사람마다 E가 4~10회로 벌어졌다.
+                # 인력이 남는 달에만 1단계에서 차이 2회 초과를 막고, 세밀한 조정은 2단계에 맡긴다 (11/23).
+                # 모자라는 달이나 하드 규칙을 감점으로 바꿔 다시 풀 때 걸면 인원 채우기·하드 규칙과 부딪친다
+                self.at_most(hi - lo, 2, SOFTENED_WEIGHT, len(ds))
 
     def hint(self, cells: Cells):
         self.m.ClearHints()

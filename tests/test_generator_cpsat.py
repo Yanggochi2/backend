@@ -61,7 +61,8 @@ def test_continues_last_month_nights():
     ns = [nurse(i) for i in range(1, 13)]
     # 지난달 말 N N N → 연속 야간 3일을 채웠으므로 1·2일은 OFF (야간 후 휴식)
     before = {1: {NOV - timedelta(days=k): Duty.N for k in (1, 2, 3)}}
-    out, vs = run(Roster(NOV, ns, {}, rules(2, 2, 2), 8, before=before))
+    # 인력이 남아 1단계에서 E·N 횟수 차이도 막으므로 1초(1단계 0.3초)로는 모자라다. 실제 기본값은 30초
+    out, vs = run(Roster(NOV, ns, {}, rules(2, 2, 2), 8, before=before), seconds=5)
     assert hard(vs) == [] and out.cell(1, DAYS[0]) == Duty.O and out.cell(1, DAYS[1]) == Duty.O
 
 
