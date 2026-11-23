@@ -36,6 +36,9 @@ OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
 # "되도록 그대로 둘" 칸(prefer)을 바꿀 때 칸당 감점. 소프트 규칙보다 크고 인원 부족(COVERAGE_WEIGHT)보다 작다
 KEEP_WEIGHT = 2_000
 COMFORT_WEIGHT = 8  # 연속 근무 권장 상한(MAX_CONSECUTIVE_WORK - 1)을 넘을 때 감점 (2단계 소프트)
+# 하드 규칙끼리(또는 고정 칸과) 부딪쳐 해가 없을 때, 하드 규칙을 이 감점으로 바꿔 다시 푼다.
+# 인원 부족(최대 COVERAGE_WEIGHT×3)·신입 단독 야간(NEW_ALONE_WEIGHT)보다 커서 여전히 하드 규칙을 먼저 지킨다
+HARD_PENALTY = 100_000
 REVERSE = ((Duty.E, Duty.D), (Duty.N, Duty.D), (Duty.N, Duty.E))  # 근무 사이 휴식이 11시간 미만
 LOOKBACK_DAYS = 7  # 지난달 말 근무를 이어서 볼 일수 (연속 근무 최대 5일 + 여유)
 WORK, REST = "WORK", "REST"
@@ -50,27 +53,48 @@ FOUND = (cp_model.OPTIMAL, cp_model.FEASIBLE)
 def generate(r: Roster, max_seconds: float | None = None, prefer: Cells | None = None) -> Cells:
     """
     두 단계로 푼다. 1단계(시간의 30%)는 하드 규칙(큰 감점)만 줄여 위반 없는 해를 빨리 찾고,
-    2단계는 그 해를 시작점으로 소프트 규칙까지 최적화한다. 한 번에 풀면 소프트 감점에 묻혀 하드 위반이 늦게 사라진다
+    2단계는 그 해를 시작점으로 소프트 규칙까지 최적화한다. 한 번에 풀면 소프트 감점에 묻혀 하드 위반이 늦게 사라진다.
+    하드 규칙끼리(또는 고정 칸과) 부딪쳐 해가 없다고 나오면, 하드 규칙을 HARD_PENALTY 감점으로 바꿔 다시 푼다.
+    그래야 부딪친 사람·날만 어긋나고 나머지 간호사의 OFF 개수 등은 그대로 맞는다.
+    (예전에는 바로 그리디로 넘어가 한 사람의 충돌로 모든 간호사의 OFF가 11~21개로 벌어졌다)
     """
     total = max_seconds or DEFAULT_SECONDS
-    model = _Model(r)
-    model.build()
-    # 솔버가 해를 못 찾으면 그리디 결과를 쓴다. 시작점은 달력과 O 목표를 반영한 힌트
-    best = greedy.generate(r)
+    deadline = None
+    for soften_hard in (False, True):
+        model = _Model(r, soften_hard)
+        model.build()
+        start = _start(r, model, prefer)
+        if deadline is None:
+            # 예전과 같이 첫 모델을 만든 뒤부터 시간을 잰다. 다시 푸는 모델은 남은 시간 안에서 푼다
+            deadline = time.monotonic() + total
+        found = _solve(model, start, deadline, total)
+        if found is not None:
+            return found
+    # 시간 안에 어떤 해도 못 찾으면 그리디 결과를 쓴다
+    return greedy.generate(r)
+
+
+def _start(r: Roster, model: "_Model", prefer: Cells | None) -> Cells:
+    """시작점: 달력과 O 목표를 반영한 힌트.
+    prefer: 못 박지는 않지만 되도록 그대로 둘 칸. 바꾸면 칸마다 KEEP_WEIGHT 감점하고, 시작점도 그 값으로 둔다.
+    prefer가 없으면 모델·시작점은 예전과 똑같다"""
     start = _rotation_hint(r)
-    # prefer: 못 박지는 않지만 되도록 그대로 둘 칸. 바꾸면 칸마다 KEEP_WEIGHT 감점하고, 시작점도 그 값으로 둔다.
-    # prefer가 없으면 모델·시작점은 예전과 똑같다
     if prefer:
         for (nurse_id, d), vs in model.free.items():
             x = prefer.get(nurse_id, {}).get(d)
             if x in vs:
                 model.cost.append((KEEP_WEIGHT, vs[x].Not()))
                 start.setdefault(nurse_id, {})[d] = x
+    return start
+
+
+def _solve(model: "_Model", start: Cells, deadline: float, total: float) -> Cells | None:
+    """두 단계로 풀어 찾은 해. 해가 없다고 증명되거나 시간 안에 못 찾으면 None"""
     model.hint(start)
     solver = cp_model.CpSolver()
     solver.parameters.num_workers = 8
     solver.parameters.random_seed = 0
-    deadline = time.monotonic() + total
+    best = None
     for minimum, limit in ((SOFTENED_WEIGHT, total * 0.3), (0, None)):
         objective = sum(w * e for w, e in model.cost if w >= minimum)
         model.m.Minimize(objective)
@@ -79,7 +103,11 @@ def generate(r: Roster, max_seconds: float | None = None, prefer: Cells | None =
         if remaining <= 0:
             break
         solver.parameters.max_time_in_seconds = min(limit or remaining, remaining)
-        if solver.Solve(model.m) in FOUND:
+        status = solver.Solve(model.m)
+        if status == cp_model.INFEASIBLE:
+            # 2단계도 같은 제약이라 해가 없다. 남은 시간은 하드 규칙을 감점으로 바꾼 모델에 쓴다
+            return None
+        if status in FOUND:
             best = model.cells(solver)
             model.hint(best)
             if minimum:
@@ -115,8 +143,9 @@ def _neg(lit):
 
 
 class _Model:
-    def __init__(self, r: Roster):
+    def __init__(self, r: Roster, soften_hard: bool = False):
         self.r, self.rules, self.m = r, r.rules, cp_model.CpModel()
+        self.soften_hard = soften_hard  # True면 하드 규칙을 제약 대신 HARD_PENALTY 감점으로 둔다 (해가 없을 때)
         self.days = r.days()
         self.timeline = [self.days[0] - timedelta(days=k) for k in range(LOOKBACK_DAYS, 0, -1)] + self.days
         self.cost: list = []  # (가중치, 선형식)
@@ -154,13 +183,16 @@ class _Model:
 
     # --- 제약 도구 ---
     def weight(self, code: str, hard_weight=None):
-        """꺼짐이면 SKIP, HARD면 hard_weight(None이면 제약), SOFT로 낮춘 하드 규칙은 SOFTENED_WEIGHT"""
+        """꺼짐이면 SKIP, HARD면 hard_weight(None이면 제약), SOFT로 낮춘 하드 규칙은 SOFTENED_WEIGHT.
+        soften_hard면 제약(None) 대신 HARD_PENALTY 감점"""
         if not self.rules.enabled(code):
             return SKIP
         mode = self.rules.severity_for(code)
         if code in WEIGHTS:
-            return None if mode == Severity.HARD else WEIGHTS[code]
-        return hard_weight if mode == Severity.HARD else SOFTENED_WEIGHT
+            w = None if mode == Severity.HARD else WEIGHTS[code]
+        else:
+            w = hard_weight if mode == Severity.HARD else SOFTENED_WEIGHT
+        return HARD_PENALTY if w is None and self.soften_hard else w
 
     def forbid(self, lits, weight):
         """lits가 모두 참인 상황을 막는다(weight None) 또는 감점한다. 고정 칸만으로 정해진 경우는 건너뛴다"""

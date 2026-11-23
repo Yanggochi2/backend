@@ -80,3 +80,17 @@ def test_shortage_empties_day_shift_first():
     count = {x: [sum(out.cell(n.id, d) == x for n in ns) for d in DAYS] for x in (Duty.D, Duty.E, Duty.N)}
     assert min(count[Duty.E]) == 3 and min(count[Duty.N]) == 3, count
     assert sum(count[Duty.D]) == 240 - 180 and max(count[Duty.N]) == 3
+
+
+def test_one_conflicting_nurse_does_not_break_everyone_elses_off():
+    """한 사람의 고정 칸이 하드 규칙과 부딪쳐 해가 없어도, 나머지 간호사의 OFF 개수는 목표대로 맞춘다.
+    예전에는 바로 그리디로 넘어가 모두의 OFF가 벌어졌다 (11/17 미팅 'OFF 9/15/10')"""
+    ns = [nurse(i) for i in range(1, 16)]
+    # 1번에게 O 12개를 미리 넣어 OFF 목표(8)와 부딪치게 한다
+    fixed = {1: {DAYS[i]: Duty.O for i in range(12)}}
+    rules_ = rules(2, 2, 2, CHARGE_EVERY_SHIFT=None, SENIOR_EVERY_SHIFT=None)
+    out, vs = run(Roster(NOV, ns, fixed, rules_, 8), seconds=10)
+    offs = {n.id: sum(out.cell(n.id, d) == Duty.O for d in DAYS) for n in ns}
+    assert all(offs[n.id] == 8 for n in ns[1:]), offs
+    # 남는 위반은 부딪친 1번에게만 생긴다 (어떤 규칙으로 어긋날지는 탐색 결과에 따라 다를 수 있다)
+    assert all(v.nurse_id == 1 for v in hard(vs)), hard(vs)
