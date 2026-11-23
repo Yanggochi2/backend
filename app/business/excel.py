@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.business import audit, members, schedules
 from app.business.common import ApiException, not_found, unprocessable
-from app.domain import validator
+from app.domain import staffing, validator
 from app.domain.model import Duty, StaffType
 from app.persistence.db import now
 from app.persistence.models import ImportPreview
@@ -104,16 +104,16 @@ def _write_schedule(ws, r) -> None:
                 style(c, tone[0])
         ws.row_dimensions[line].height = 21
 
+    goals = staffing.targets(r)
     for duty in (Duty.D, Duty.E, Duty.N):
-        need = r.rules.required(duty)
         # 인원은 간호사만 센다 (간호조무사는 필요 인원에 넣지 않는다)
         counts = [sum(1 for n in r.nurses if n.staff_type == StaffType.NURSE and r.cell(n.id, d) == duty and n.affiliated(d))
                   for d in days]
-        ws.append([f"{duty} 인원", None] + [f"{c}/{need}" for c in counts])  # 화면 아랫줄과 같은 "실제/필요"
+        ws.append([f"{duty} 인원", None] + [f"{c}/{goals[d][duty]}" for c, d in zip(counts, days)])  # 화면 아랫줄과 같은 "실제/필요"
         line = ws.max_row
         ws.merge_cells(start_row=line, start_column=1, end_row=line, end_column=NAME_COLS)
         for col in range(1, total_col + 1):
-            short = first_day <= col <= last_day and counts[col - first_day] < need
+            short = first_day <= col <= last_day and counts[col - first_day] < goals[days[col - first_day]][duty]
             style(ws.cell(line, col), "FFEBEE" if short else HEAD_FILL, "F04452" if short else "000000", bold=col == 1 or short)
         ws.row_dimensions[line].height = 20
 

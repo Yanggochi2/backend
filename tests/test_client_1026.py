@@ -6,6 +6,7 @@ import secrets
 from sqlalchemy import create_engine, select, text
 
 from app.domain.generator import generate
+from app.domain.staffing import off_cut
 from app.domain.model import Duty, DutyRole, NurseInfo, NurseStatus, Preset, Role, Roster, Rules, Severity
 from app.domain.validator import off_target, validate
 from app.persistence.db import SessionLocal
@@ -75,16 +76,18 @@ def test_28_person_roster_matches_meeting_rules():
     for n in ns[:3]:
         for d in r.days():
             assert result.cell(n.id, d) == (Duty.O if d.weekday() >= 5 or d == holiday else Duty.D)
-    assert all(counts[n.id][Duty.O] == 11 for n in ns[3:])
+    # O 목표 11. 남는 인력으로 적정 인원을 날마다 같게(올림) 고정하느라 모두 off_cut만큼 덜 쉴 수 있다 (11/23, 이월됨)
+    fewest, most = off_cut(r)
+    assert all(11 - most <= counts[n.id][Duty.O] <= 11 - fewest for n in ns[3:]), [counts[n.id][Duty.O] for n in ns[3:]]
     assert result.cell(4, date(2026, 11, 12)) == Duty.AL
     assert result.cell(5, date(2026, 11, 13)) == Duty.ED
     for duty in (Duty.E, Duty.N):
         values = [counts[n.id][duty] for n in ns[3:]]
         assert max(values) - min(values) <= 2, (duty, values)
-    # 남는 인력은 듀티별 하루 인원을 고르게 올려 흡수한다: 필요 인원 이상, 날짜 간 차이 1명 이내
+    # 남는 인력은 듀티별 하루 인원을 올려 흡수한다: 필요 인원 이상, 날마다 같은 수 (11/23 "딱 고정")
     for duty, need in ((Duty.D, 7), (Duty.E, 5), (Duty.N, 4)):
         daily = [sum(result.cell(n.id, d) == duty for n in ns) for d in r.days()]
-        assert min(daily) >= need and max(daily) - min(daily) <= 1, (duty, daily)
+        assert min(daily) >= need and max(daily) == min(daily), (duty, daily)
     assert sum(c[Duty.N] for c in counts.values()) == 4 * 30
 
 
@@ -138,19 +141,25 @@ def test_unused_offs_allow_confirmation_and_carry_into_february():
     assert h.data('POST', f"/wards/me/schedules/{jan['id']}/generations", {'maxSeconds': 5})['status'] == 'SUCCEEDED'
     jan = h.data('GET', f"/wards/me/schedules/{jan['id']}")
     nurse = next(n for n in jan['nurses'] if n['role'] != 'HEAD_NURSE')
+    cut = next(s for s in jan['statistics'] if s['nurseId'] == nurse['id'])['remainingOff']  # 생성 때 덜 준 O
     offs = [c['date'] for c in jan['cells'] if c['nurseId'] == nurse['id'] and c['dutyCode'] == 'O'][:2]
     h.data('PATCH', f"/wards/me/schedules/{jan['id']}/cells", {'baseVersion': jan['version'], 'changes': [
         {'nurseId': nurse['id'], 'date': d, 'dutyCode': 'AL'} for d in offs]})
     jan = h.data('GET', f"/wards/me/schedules/{jan['id']}")
-    assert next(s for s in jan['statistics'] if s['nurseId'] == nurse['id'])['remainingOff'] == 2
+    assert next(s for s in jan['statistics'] if s['nurseId'] == nurse['id'])['remainingOff'] == cut + 2
     confirm_schedule(h, jan)
 
     feb = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-02'}, status=201)
     stat = next(s for s in feb['statistics'] if s['nurseId'] == nurse['id'])
-    assert stat['offCarry'] == 2 and stat['offTarget'] == feb['offTarget'] + 2
+    assert stat['offCarry'] == cut + 2 and stat['offTarget'] == feb['offTarget'] + cut + 2
     assert h.data('POST', f"/wards/me/schedules/{feb['id']}/generations", {'maxSeconds': 5})['status'] == 'SUCCEEDED'
     feb = h.data('GET', f"/wards/me/schedules/{feb['id']}")
-    assert sum(c['dutyCode'] == 'O' for c in feb['cells'] if c['nurseId'] == nurse['id']) == feb['offTarget'] + 2
+    o = {n['id']: sum(c['dutyCode'] == 'O' for c in feb['cells'] if c['nurseId'] == n['id'])
+         for n in feb['nurses'] if n['role'] != 'HEAD_NURSE'}
+    carry = {s['nurseId']: s['offCarry'] for s in feb['statistics']}
+    # 2월 생성에 이월이 반영된다: 이월을 더 많이 받은 사람이 그만큼 더 쉰다 (덜 주는 O는 모두 같게 ±1)
+    least = min(carry[n] for n in o)
+    assert all(o[nurse['id']] >= o[n] + (carry[nurse['id']] - least) - 1 for n in o if carry[n] == least), (o, carry)
 
 
 def test_keep_entered_regeneration_survives_conflicting_edits_and_new_nurse():
@@ -189,6 +198,7 @@ def test_empty_cells_do_not_carry_whole_off_target():
     jan = h.data('GET', f"/wards/me/schedules/{jan['id']}")
     assert all(c['dutyCode'] is None for c in jan['cells'] if c['nurseId'] == late)
     nurse = next(n for n in jan['nurses'] if n['role'] != 'HEAD_NURSE' and n['id'] != late)
+    cut = next(s for s in jan['statistics'] if s['nurseId'] == nurse['id'])['remainingOff']  # 생성 때 덜 준 O
     offs = [c['date'] for c in jan['cells'] if c['nurseId'] == nurse['id'] and c['dutyCode'] == 'O'][:2]
     h.data('PATCH', f"/wards/me/schedules/{jan['id']}/cells", {'baseVersion': jan['version'], 'changes': [
         {'nurseId': nurse['id'], 'date': d, 'dutyCode': 'AL'} for d in offs]})
@@ -197,4 +207,4 @@ def test_empty_cells_do_not_carry_whole_off_target():
     feb = h.data('POST', '/wards/me/schedules', {'yearMonth': '2027-02'}, status=201)
     carry = {s['nurseId']: s['offCarry'] for s in feb['statistics']}
     assert carry[late] == 0
-    assert carry[nurse['id']] == 2
+    assert carry[nurse['id']] == cut + 2

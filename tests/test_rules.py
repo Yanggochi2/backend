@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 
 from app.domain.generator import generate
+from app.domain.staffing import off_cut
 from app.domain.model import Duty, DutyRole, NurseInfo, NurseStatus, Preset, Roster, Rules, Severity
 from app.domain.validator import validate
 
@@ -89,7 +90,11 @@ def test_generator_distributes_off_within_target_tolerance():
     rules = Rules.preset(Preset.STANDARD, 2, 2, 1)
     roster = Roster(OCT, ns, {}, rules, 15)
     result = roster.with_cells(generate(roster))
-    assert not [v for v in validate(result) if v.rule_id in {"COVERAGE", "OFF_TARGET"}]
+    assert not [v for v in validate(result) if v.rule_id == "COVERAGE"]
+    # 인력이 남아 날마다 적정 인원을 올림으로 고정하면 O를 덜 준다 (11/23). 덜 준 개수는 off_cut 범위, 사람마다 1개 차이
+    fewest, most = off_cut(roster)
+    offs = [sum(result.cell(n.id, d) == Duty.O for d in result.days()) for n in ns]
+    assert all(15 - most <= o <= 15 - fewest for o in offs), offs
 
 
 def test_consecutive_rules_span_month_boundary():

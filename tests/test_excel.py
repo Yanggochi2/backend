@@ -86,7 +86,10 @@ def test_export_layout_matches_the_schedule_screen_and_only_the_schedule():
     assert cells["O"].fill.fgColor.rgb.endswith("EEF0F3")
     # 아랫줄: 날짜별 D/E/N 인원 "실제/필요"
     assert [ws.cell(3 + nurses + i, 1).value for i in range(3)] == ["D 인원", "E 인원", "N 인원"]
-    assert all(str(ws.cell(3 + nurses, c).value).endswith("/1") for c in range(3, last_day + 1))
+    # 필요 = 그날 적정 인원. 화면(커버리지 API)과 같은 수
+    cov = [c for c in h.data("GET", f"/wards/me/schedules/{s['id']}/coverage") if c["dutyCode"] == "D"]
+    assert [ws.cell(3 + nurses, c).value for c in range(3, last_day + 1)] == [
+        f"{c['actualCount']}/{c['requiredCount']}" for c in cov]
     # 고정 틀 · 인쇄 설정
     assert ws.freeze_panes == "C3"
     assert ws.page_setup.orientation == "landscape" and int(ws.page_setup.paperSize) == int(ws.PAPERSIZE_A4)

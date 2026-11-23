@@ -52,3 +52,52 @@
 - 개인별 D/E/N/O/AL/ED와 잔여·이월 OFF
 
 해당 월 근무표가 없어도 인력 현황과 빈 통계 구조를 반환한다.
+
+## 자동 생성 전 인원 부족 차단 (11/23 미팅)
+
+`POST /wards/me/schedules/{scheduleId}/generations`는 지금 인원으로 하루 필요 인원(D/E/N)을 한 달 내내
+채울 수 없으면 생성하지 않고 `422 STAFFING_SHORTAGE`를 돌려준다. 필요 인원을 낮추는 대신 모자란 인원을 알린다.
+
+```json
+{"error": {"code": "STAFFING_SHORTAGE",
+  "message": "지금 인원으로는 하루 필요 인원을 채울 수 없습니다. 간호사 약 2명이 더 필요합니다",
+  "details": {"shortDays": 32, "nursesNeeded": 2, "supply": 420, "demand": 452, "surplus": -32,
+              "current": {"D": 7, "E": 5, "N": 4}, "recommended": {"D": 5, "E": 5, "N": 3}}}}
+```
+
+- `supply`: 교대 간호사(차지·수간호사·간호조무사·휴직자 제외)의 한 달 근무 가능일 합 = 소속 일수 − O 목표 − AL/ED 칸
+- `demand`: 하루 필요 인원 × 일수 − 평일 D 고정 인원(차지 등)이 메우는 D
+- `shortDays` = `demand − supply`, `nursesNeeded` = `shortDays ÷ (일수 − O 목표)` 올림
+- 판단식은 `GET /wards/me/schedules/{id}/staffing-recommendation`과 같다. 생성 전에 미리 보여 줄 때 이 API를 쓴다.
+
+수간호사가 경고를 보고도 만들겠다고 하면 요청 본문에 `"allowShortage": true`를 넣어 다시 보낸다. 이때는 기존처럼
+가장 나은 결과를 만들며, 모자란 날은 하단 인원 행에 미달로 남는다. 규칙 완화 재실행(`/relaxations`)은 확인 없이 진행한다.
+골라서 다시 짜기(`fixedCells`)도 같은 API라 인원이 모자란 달에는 `allowShortage`가 필요하다.
+
+### OFF 개수 (기존 규칙 유지)
+
+개인별 OFF 목표가 다른 것은 규칙대로다. 근무표 통계의 `offTarget`, `offCarry`로 이유를 보여 줄 수 있다.
+
+- 일반 간호사: 주말 ∪ 공휴일 날짜 수 + 1 (+ 확정된 지난달에 못 쓴 O `offCarry`)
+- 차지·수간호사(평일 D 고정): 주말 ∪ 공휴일 날짜 수 (주5일)
+- 중도 소속: 소속 일수에 비례
+
+## 인원이 남을 때 D/E/N 적정 인원 (11/23 미팅)
+
+인원이 남는 달에는 남는 근무일을 D에만 몰지 않고 날짜와 D/E/N에 고르게 나눠 그날의 **적정 인원**으로 맞춘다.
+O 목표(주말 ∪ 공휴일 + 1)는 그대로 정확히 지킨다. 남는 근무일 합계가 적정 인원 증가분과 같아서 두 조건을 함께 맞춘다.
+
+- 그날 안에서는 병동 설정의 필요 인원 비율(예: 7:5:4)로 나눈다. N은 야간 가능 인원을 넘겨 올리지 않는다.
+- 인원이 모자라는 달은 적정 인원 = 필요 인원 (생성 전 `STAFFING_SHORTAGE`로 막힘).
+- 예: 데모 병동 28명(남는 근무일 83일)은 날마다 D 8 · E 6 · N 4~5.
+
+커버리지 응답(`GET .../coverage`, 셀 수정 응답의 `coverage`)이 바뀌었다.
+
+| 필드 | 뜻 |
+| --- | --- |
+| `requiredCount` | 그날 적정 인원 (이전: 병동 설정 필요 인원). 화면 아랫줄 "실제/필요"의 분모 |
+| `minimumCount` | 병동 설정의 최소 필요 인원 (새 필드) |
+| `status` | `requiredCount` 기준 UNDER/MET/OVER |
+
+확정을 막는 하드 위반(COVERAGE)은 여전히 `minimumCount` 기준이다. 적정 인원보다 적어도 최소 인원 이상이면 확정할 수 있다.
+엑셀 내보내기 아랫줄도 `실제/적정 인원`으로 나온다.

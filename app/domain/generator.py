@@ -12,7 +12,7 @@ from datetime import date, timedelta
 
 from ortools.sat.python import cp_model
 
-from app.domain import greedy
+from app.domain import greedy, staffing
 from app.domain.model import (NIGHT_ONLY_MAX_NIGHTS, SENIOR_ROLES, Cells, Duty, DutyRole, NurseStatus, Roster,
                               Severity, StaffType)
 from app.domain.validator import SKILL_TOLERANCE, has_role, off_target
@@ -28,10 +28,8 @@ WEIGHTS = {"WISH_OFF_IGNORED": 40, "MAX_MONTHLY_NIGHTS": 50, "OFF_TARGET": SOFTE
            "PRECEPTOR_MISMATCH": 5, "SKILL_MIX": 5}
 SKILL_OUT_WEIGHT = 100  # 근무 평균 숙련도가 허용 범위를 벗어난 정도
 FAIRNESS_WEIGHT = 10
-LEVEL_WEIGHT = 1_000  # 듀티별 하루 인원의 일자 간 차이(최대-최소) 1명당
-# N 초과는 1단계(SOFTENED_WEIGHT 이상, 수 초 안에 최적해)에서 막는다. 2단계에 두면 CPU 부하에 따라 N이 0~19칸 넘쳤다
-OVER_NIGHT_WEIGHT = 600
-# 필요 인원을 넘는 인력은 D에 먼저, 그다음 E에 둔다 (N은 필요 인원만). 일당 감점
+# 날짜별 적정 인원(staffing.targets)에서 1명 벗어날 때마다. 1단계(SOFTENED_WEIGHT 이상)에서 맞춘다
+TARGET_WEIGHT = 1_000
 OFF_EXACT_WEIGHT = 30  # 허용 편차 안에서도 목표에 가깝게
 # "되도록 그대로 둘" 칸(prefer)을 바꿀 때 칸당 감점. 소프트 규칙보다 크고 인원 부족(COVERAGE_WEIGHT)보다 작다
 KEEP_WEIGHT = 2_000
@@ -147,6 +145,8 @@ class _Model:
         self.r, self.rules, self.m = r, r.rules, cp_model.CpModel()
         self.soften_hard = soften_hard  # True면 하드 규칙을 제약 대신 HARD_PENALTY 감점으로 둔다 (해가 없을 때)
         self.days = r.days()
+        # 적정 인원을 매일 같게 맞추느라 O를 덜 주는 개수 (최소, 최대). 덜 준 O는 다음 달로 이월
+        self.off_cut = staffing.off_cut(r)
         self.timeline = [self.days[0] - timedelta(days=k) for k in range(LOOKBACK_DAYS, 0, -1)] + self.days
         self.cost: list = []  # (가중치, 선형식)
         self.free: dict = {}  # (간호사 id, 날짜) -> {Duty: BoolVar}
@@ -324,7 +324,10 @@ class _Model:
             w = self.weight("OFF_TARGET")
             if w is not SKIP:
                 target, dev = off_target(r, n), self.rules.parameter("OFF_TARGET", "maxDeviation")
-                self.at_least(rest, target - dev, w)
+                fewest, most = self.off_cut
+                self.at_least(rest, target - dev - most, w)
+                if fewest:  # 덜 주는 O를 고르게: 누구는 0개, 누구는 2개 덜 쉬지 않게 모두 최소 fewest개
+                    self.at_most(rest, target - fewest, SOFTENED_WEIGHT, len(days))
                 self.at_most(rest, target + dev, w, len(days))
                 self.at_least(rest, target, OFF_EXACT_WEIGHT)
                 self.at_most(rest, target, OFF_EXACT_WEIGHT, len(days))
@@ -388,28 +391,18 @@ class _Model:
         w_new = self.weight("NEW_NIGHT_ALONE", NEW_ALONE_WEIGHT)
         needs = {"CHARGE_EVERY_SHIFT": has_role(r, {DutyRole.CHARGE}), "SENIOR_EVERY_SHIFT": has_role(r, SENIOR_ROLES)}
         w_skill = self.weight("SKILL_MIX")
-        # 적정 인원: 필요 인원보다 인력이 남으면 남는 만큼 듀티별 하루 인원을 올리되, 모든 날을 같은 수(최대 1 차이)로 맞춘다.
-        # 특정 날짜에 몰리지 않게 듀티마다 일자별 최대-최소 차이를 감점한다. N은 남아도 늘리지 않는다
-        level = {}
-        if w is not SKIP:
-            for x in (Duty.D, Duty.E):
-                if r.rules.required(x) > 0:
-                    lo, hi = self.m.NewIntVar(0, len(r.nurses), ""), self.m.NewIntVar(0, len(r.nurses), "")
-                    level[x] = (lo, hi)
-                    self.at_most(hi - lo, 1, LEVEL_WEIGHT, len(r.nurses))
+        # 적정 인원: 인력이 남으면 필요 인원보다 많게, 날짜·D/E/N에 고르게 나눈 수 (staffing.targets)
+        goals = staffing.targets(r) if w is not SKIP else {}
         for d in self.days:
             on = [n for n in r.nurses if n.affiliated(d) and n.staff_type == StaffType.NURSE]
             for x in (Duty.D, Duty.E, Duty.N):
-                # 최소 인원 부족은 큰 감점으로 찾아낸 뒤 검증기에서 HARD로 보고한다. 초과 E/N은 억제한다.
                 assigned = sum(self.lit(n, d, x) * 1 for n in on)
                 need = r.rules.required(x)
                 # 인력이 모자라면 D부터 비우고 E, N 순서로 지킨다
                 self.at_least(assigned, need, w if w is SKIP else w * SHORT_PRIORITY[x])
                 if w is not SKIP:
-                    self.at_most(assigned, need, {Duty.D: 1, Duty.E: 100, Duty.N: OVER_NIGHT_WEIGHT}[x], len(on))
-                if x in level:
-                    self.m.Add(assigned >= level[x][0])
-                    self.m.Add(assigned <= level[x][1])
+                    self.at_least(assigned, goals[d][x], TARGET_WEIGHT)
+                    self.at_most(assigned, goals[d][x], TARGET_WEIGHT, len(on))
                 if w_skill is not SKIP and need > 0:
                     # 평균 숙련도를 목표에 가깝게: |Σ(숙련도 - 목표)| 감점, 허용 범위(±SKILL_TOLERANCE)를 벗어나면 크게
                     goal = r.rules.parameter("SKILL_MIX", "target")

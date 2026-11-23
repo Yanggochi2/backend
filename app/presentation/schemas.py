@@ -169,6 +169,7 @@ class CellRef(Body):
 class GenerationStart(Body):
     fixed_cells: list[CellRef] = []
     max_seconds: int | None = None
+    allow_shortage: bool = False  # true면 인원 부족(STAFFING_SHORTAGE)이어도 만든다
 
 
 class Stop(Body):
