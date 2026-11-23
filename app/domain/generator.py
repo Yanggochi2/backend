@@ -59,11 +59,15 @@ def generate(r: Roster, max_seconds: float | None = None, prefer: Cells | None =
     (예전에는 바로 그리디로 넘어가 한 사람의 충돌로 모든 간호사의 OFF가 11~21개로 벌어졌다)
     """
     total = max_seconds or DEFAULT_SECONDS
-    deadline = time.monotonic() + total
+    deadline = None
     for soften_hard in (False, True):
         model = _Model(r, soften_hard)
         model.build()
-        found = _solve(model, _start(r, model, prefer), deadline, total)
+        start = _start(r, model, prefer)
+        if deadline is None:
+            # 예전과 같이 첫 모델을 만든 뒤부터 시간을 잰다. 다시 푸는 모델은 남은 시간 안에서 푼다
+            deadline = time.monotonic() + total
+        found = _solve(model, start, deadline, total)
         if found is not None:
             return found
     # 시간 안에 어떤 해도 못 찾으면 그리디 결과를 쓴다
